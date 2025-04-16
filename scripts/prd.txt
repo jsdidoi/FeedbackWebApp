@@ -1,0 +1,303 @@
+# Overview
+Design Feedback Web Application is a comprehensive platform built to streamline the design review and feedback process between designers and clients. The application solves the challenge of managing design iterations, collecting precise feedback, and maintaining clear communication throughout the design process. It's primarily designed for illustrators and designers who work with clients on various design projects, particularly focusing on illustrations, animated GIFs, and potentially video content.
+
+The platform provides a structured approach to version control, feedback collection, and project management, making it easier for designers to manage multiple clients and projects while giving clients an intuitive interface for providing detailed feedback.
+
+The application follows a minimal, modern design aesthetic with clear navigation and intuitive interfaces, ensuring both designers and clients can focus on the work without interface complexity getting in the way.
+
+# Core Features
+
+## Project Management System
+- Hierarchical organization of clients, projects, and design assets
+- Version control system with automatic numbering (V1, V2, etc.)
+- Stage tagging for different phases (sketch, refinement, color, final)
+- Up to 10 variations per version (A-J) for design alternatives
+- Status tracking (Pending, In Review, Approved, Needs Changes)
+- Bulk upload handling:
+  - Project level: Multiple uploads create separate designs
+  - Version level: Multiple uploads create variations
+  - Variation level: Multiple uploads add to existing variations
+- Design and variation management:
+  - Replace existing designs/variations
+  - Delete designs/variations with confirmation
+  - Bulk selection and management options
+
+## Design Upload and Preview System
+- Support for multiple file types (images, GIFs, SVGs, working files)
+- Intelligent multi-file upload system:
+  - Context-aware upload handling (project/version/variation)
+  - Batch processing with progress indication
+  - Automatic organization based on upload context
+- Automatic preview generation system:
+  - Thumbnails (150x150px) for navigation
+  - Preview (800px width) for grid views
+  - Full resolution for detailed review
+- Format optimization for better performance
+- Drag-and-drop interface for easy uploads
+- File management controls:
+  - Replace functionality
+  - Delete with confirmation
+  - Bulk actions support
+
+## Advanced Feedback System
+- General comments with threading and attachments
+  - Thumbnail previews for attachments
+  - Expandable attachment view
+- Pinned comments for location-specific feedback
+- Swatch system for color-related feedback
+  - Upload client color palettes
+  - Pin swatches to specific areas
+  - Copy hex codes
+  - Bulk or individual swatch deletion
+- Designer notes section for internal documentation
+- Real-time collaboration features
+
+## Comparison Tools
+- Grid view for multiple design comparison
+  - Flexible grid layouts
+  - Version/variation comparison
+- Side-by-side comparison with synchronized zooming
+- Version information display
+- Quick version switching
+
+## Notification System
+Priority-based notifications:
+- High Priority (Real-time): 
+  - Approvals/rejections
+  - Urgent amendment requests
+  - Approaching deadlines
+  - Direct @mentions
+- Medium Priority (Batched): 
+  - New design uploads
+  - New variations
+  - Status changes
+  - Multiple comments on same design
+- Low Priority (Daily digest): 
+  - General comments
+  - View notifications
+  - Project updates
+Delivery through in-app, email, and Slack/Teams integration
+
+# User Experience
+
+## Visual Design and Interface
+
+### Design Principles
+- Minimal and modern aesthetic
+- Clean, uncluttered layouts
+- Consistent visual hierarchy
+- Whitespace utilization for clarity
+- Clear visual feedback for actions
+
+### Interface Elements
+- High contrast for important actions
+- Subtle animations for state changes
+- Clear typography hierarchy
+- Intuitive iconography
+- Consistent color system for status and actions
+
+### Navigation
+- Clear breadcrumb navigation
+- Persistent access to key functions
+- Contextual menus and actions
+- Simplified workflow paths
+- Quick access to recent items
+
+### Upload Interface
+- Visual upload zones with clear indicators
+- Progress bars for bulk uploads
+- Preview thumbnails during upload
+- Clear success/error states
+- Batch action controls
+
+## User Personas
+
+### Designers
+- Need to manage multiple clients and projects
+- Upload and organize design iterations
+- Respond to feedback efficiently
+- Track project progress and deadlines
+
+### Clients
+- Need to provide clear, specific feedback
+- Review multiple design versions
+- Track project progress
+- Easy access to latest designs
+
+### Administrators
+- Manage user access and permissions
+- Monitor system usage and performance
+- Handle subscription management
+
+## Key User Flows
+
+### Designer Flow
+1. Project Creation and Setup
+2. Multi-file Design Upload and Organization
+3. Version and Variation Management
+4. Feedback Review and Response
+5. Design Iteration and Asset Management
+
+### Client Flow
+1. Project Access
+2. Design Review and Comparison
+3. Feedback Provision (Comments, Pins, Swatches)
+4. Version Comparison
+5. Final Approval
+
+# Technical Architecture
+
+## Frontend
+- Next.js 14+ with React
+- Tailwind CSS for styling
+- React Query for data fetching
+- Zustand for state management
+- Key libraries:
+  - react-dropzone for multi-file uploads
+  - fabric.js for annotation tools
+  - react-grid-layout for comparison views
+  - react-hot-toast for notifications
+
+## Backend (Supabase)
+- Authentication system
+- Real-time database
+- Storage system with CDN
+- Edge Functions
+- Batch processing capabilities
+
+## Additional Services
+- Image processing (Sharp.js, ImageMagick)
+  - Batch processing service
+  - Preview generation
+  - Format optimization
+- WebSocket for real-time features
+- Email service for notifications
+- File management system
+
+# Development Roadmap
+
+## Phase 1: Foundation
+- Basic authentication and user roles
+- Project structure and organization
+- Simple design upload and preview
+- Basic comment system
+
+## Phase 2: Core Features
+- Version control system
+- Advanced preview generation
+- Basic feedback tools
+- Initial notification system
+
+## Phase 3: Advanced Features
+- Pinned comments
+- Swatch system
+- Comparison tools
+- Template system
+
+## Phase 4: Enhancement
+- Real-time collaboration
+- Advanced analytics
+- Integration features
+- Export functionality
+
+# Logical Dependency Chain
+
+1. Foundation Layer
+   - User authentication
+   - Basic project structure
+   - File upload system
+
+2. Core Functionality
+   - Design preview system
+   - Version control
+   - Basic feedback system
+
+3. Advanced Features
+   - Annotation tools
+   - Swatch system
+   - Comparison tools
+
+4. Enhancement Layer
+   - Real-time features
+   - Analytics
+   - Integrations
+
+# Risks and Mitigations
+
+## Technical Challenges
+- Multi-file upload performance
+  - Mitigation: Implement chunked uploads and progress tracking
+- Batch processing overhead
+  - Mitigation: Queue system with background processing
+- Storage management
+  - Mitigation: Implement cleanup and archival strategies
+
+## MVP Considerations
+- Focus on core features first:
+  - Project organization
+  - Design upload/preview
+  - Basic feedback system
+- Ensure foundation is extensible for future features
+
+## Resource Constraints
+- Complex feature set
+  - Mitigation: Phased implementation approach
+- Performance requirements
+  - Mitigation: Efficient architecture and caching strategies
+
+# Appendix
+
+## User Roles and Permissions
+Detailed breakdown of user roles:
+- Admin: Full system access
+- Designer: Upload/manage designs, feedback management
+- Client: View/comment on designs, use annotation tools
+
+## File Support
+Supported file types:
+- Images: JPG, PNG, WebP
+- Animations: GIF
+- Vector: SVG
+- Working files: AI, PSD (for final deliverables)
+
+## Notification Matrix
+Detailed notification rules:
+- High Priority: Instant delivery
+- Medium Priority: 2-4 hour batches
+- Low Priority: Daily digest
+
+## UI/UX Guidelines
+- Color Palette:
+  - Primary: Clean, neutral base
+  - Secondary: Subtle accent colors
+  - Status: Clear, distinctive colors for different states
+- Typography:
+  - Sans-serif for interface elements
+  - Clear hierarchy with weight and size
+  - Optimal line-height for readability
+- Spacing System:
+  - Consistent padding and margins
+  - Responsive grid system
+  - Comfortable reading distances
+- Interactive Elements:
+  - Clear hover/active states
+  - Consistent button styling
+  - Obvious clickable elements
+- Loading States:
+  - Subtle loading animations
+  - Progress indicators for uploads
+  - Skeleton screens for content loading
+
+## Multi-file Upload Workflows
+- Project Level:
+  - Multiple files → Multiple new designs
+  - Automatic version numbering
+  - Batch processing status
+- Version Level:
+  - Multiple files → Multiple variations
+  - Automatic variation lettering
+  - Preview generation queue
+- Variation Level:
+  - Multiple files → Additional variations
+  - Sequential variation naming
+  - Bulk processing handling 

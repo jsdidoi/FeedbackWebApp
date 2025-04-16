@@ -1,0 +1,91 @@
+{
+  "meta": {
+    "generatedAt": "2025-04-15T13:03:16.135Z",
+    "tasksAnalyzed": 10,
+    "thresholdScore": 5,
+    "projectName": "Your Project Name",
+    "usedResearch": true
+  },
+  "complexityAnalysis": [
+    {
+      "taskId": 1,
+      "taskTitle": "Setup Next.js Project with Supabase Integration",
+      "complexityScore": 7,
+      "recommendedSubtasks": 5,
+      "expansionPrompt": "Break down the task into subtasks such as initializing the Next.js project, configuring Tailwind CSS, setting up Supabase client and environment variables, implementing folder structure, and integrating Zustand and React Query.",
+      "reasoning": "This task involves multiple setup steps, including integrating several tools and frameworks, which require careful configuration and adherence to best practices."
+    },
+    {
+      "taskId": 2,
+      "taskTitle": "Implement User Authentication and Role Management",
+      "complexityScore": 8,
+      "recommendedSubtasks": 6,
+      "expansionPrompt": "Divide the task into subtasks such as implementing authentication flows, creating the user profiles table with roles, developing role-based routing, building protected routes, designing the user management interface, and creating role-specific profile views.",
+      "reasoning": "The task is complex due to the need for secure authentication, database schema design, and role-based access control, which require careful implementation and testing."
+    },
+    {
+      "taskId": 3,
+      "taskTitle": "Build Project Management System",
+      "complexityScore": 9,
+      "recommendedSubtasks": 7,
+      "expansionPrompt": "Break down the task into subtasks such as creating Supabase tables for hierarchy, implementing version control, adding stage tagging, building status tracking, designing the project dashboard, creating breadcrumb navigation, and developing project creation/editing interfaces.",
+      "reasoning": "This task is highly complex due to the need for a hierarchical structure, multiple interrelated features, and a user-friendly interface."
+    },
+    {
+      "taskId": 4,
+      "taskTitle": "Implement Multi-File Upload System",
+      "complexityScore": 8,
+      "recommendedSubtasks": 6,
+      "expansionPrompt": "Split the task into subtasks such as integrating react-dropzone, implementing context-aware upload logic, creating progress indicators, adding file validation, developing chunked uploads, and designing the upload interface.",
+      "reasoning": "The task involves handling multiple files, ensuring robust validation, and providing a seamless user experience, which adds to its complexity."
+    },
+    {
+      "taskId": 5,
+      "taskTitle": "Build Preview Generation System",
+      "complexityScore": 8,
+      "recommendedSubtasks": 6,
+      "expansionPrompt": "Break down the task into subtasks such as setting up Sharp.js, creating Edge Functions, implementing thumbnail and preview generation, optimizing formats, building a processing queue, and designing caching strategies.",
+      "reasoning": "This task is complex due to the need for efficient image processing, optimization, and caching mechanisms to ensure performance."
+    },
+    {
+      "taskId": 6,
+      "taskTitle": "Implement Basic Feedback System",
+      "complexityScore": 7,
+      "recommendedSubtasks": 5,
+      "expansionPrompt": "Divide the task into subtasks such as creating the comments table, implementing threading, adding attachment support, designing the comment interface, and enabling real-time updates.",
+      "reasoning": "The task requires database design, real-time updates, and a user-friendly interface, which makes it moderately complex."
+    },
+    {
+      "taskId": 7,
+      "taskTitle": "Develop Advanced Feedback Tools",
+      "complexityScore": 8,
+      "recommendedSubtasks": 6,
+      "expansionPrompt": "Break down the task into subtasks such as integrating annotation tools, implementing pinned comments, creating the swatch system, building color palette management, designing designer notes, and adding filtering options.",
+      "reasoning": "This task is complex due to the need for advanced UI features and integration of tools like fabric.js for annotations."
+    },
+    {
+      "taskId": 8,
+      "taskTitle": "Build Comparison Tools",
+      "complexityScore": 7,
+      "recommendedSubtasks": 5,
+      "expansionPrompt": "Divide the task into subtasks such as implementing grid and side-by-side views, adding synchronized zooming, creating version metadata display, designing quick switching controls, and building the comparison interface.",
+      "reasoning": "The task involves creating dynamic and interactive comparison tools, which require careful design and implementation."
+    },
+    {
+      "taskId": 9,
+      "taskTitle": "Implement Notification System",
+      "complexityScore": 6,
+      "recommendedSubtasks": 5,
+      "expansionPrompt": "Break down the task into subtasks such as creating the notifications table, implementing priority-based logic, integrating in-app and email notifications, designing the notification center, and adding user preferences settings.",
+      "reasoning": "The task is moderately complex due to the need for multi-channel notifications and user customization options."
+    },
+    {
+      "taskId": 10,
+      "taskTitle": "Implement UI/UX Refinements and Performance Optimization",
+      "complexityScore": 8,
+      "recommendedSubtasks": 6,
+      "expansionPrompt": "Divide the task into subtasks such as refining the color palette and typography, adding loading states, optimizing image loading, implementing responsive design, creating animations, and adding performance monitoring.",
+      "reasoning": "This task is complex due to the need for comprehensive UI/UX improvements and performance optimizations across the application."
+    }
+  ]
+}
