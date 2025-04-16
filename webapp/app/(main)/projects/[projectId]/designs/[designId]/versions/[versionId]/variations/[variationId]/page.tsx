@@ -1,15 +1,22 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/providers/AuthProvider';
 import { useParams } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Badge } from "@/components/ui/badge";
-import { Loader2 } from 'lucide-react'; // Import necessary icons later (e.g., Pencil for edit)
+import { Loader2, Pencil } from 'lucide-react';
 import Link from 'next/link';
 import Breadcrumbs, { BreadcrumbItem } from '@/components/ui/breadcrumbs';
-// Import Button later if needed for actions
-// import { Button } from '@/components/ui/button';
+import { Button } from '@/components/ui/button';
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useForm, Controller } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import * as zod from 'zod';
+import { toast } from 'sonner';
 
 // --- Type Definitions ---
 // (Ideally share these globally)
@@ -35,6 +42,13 @@ type Variation = {
     created_at: string;
     // Add fields for image/file later, e.g., file_url?: string;
 };
+
+// --- Zod Schema for Editing Variation ---
+const variationEditSchema = zod.object({
+  notes: zod.string().optional(),
+  status: zod.enum(variationFeedbackStatuses),
+});
+type VariationEditFormData = zod.infer<typeof variationEditSchema>;
 
 // --- Fetch Functions ---
 
@@ -86,6 +100,47 @@ const fetchVariation = async (supabase: any, variationId: string): Promise<Varia
     return data;
 };
 
+// --- Mutation Hooks ---
+
+// --- Update Variation Hook ---
+const useUpdateVariation = (variationId: string) => {
+    const { supabase } = useAuth();
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async (updatedData: VariationEditFormData) => {
+            if (!supabase) throw new Error("Supabase client not available");
+            if (!variationId) throw new Error("Variation ID is required");
+
+            const { data, error } = await supabase
+                .from('variations')
+                .update({
+                    notes: updatedData.notes || null, // Ensure null if empty string
+                    status: updatedData.status,
+                })
+                .eq('id', variationId)
+                .select()
+                .single();
+
+            if (error) {
+                console.error('Error updating variation:', error);
+                throw new Error(`Failed to update variation: ${error.message}`);
+            }
+            return data;
+        },
+        onSuccess: (data) => {
+            toast.success(`Variation ${data.variation_letter} updated successfully!`);
+            // Invalidate the specific variation query to refetch
+            queryClient.invalidateQueries({ queryKey: ['variation', variationId] });
+             // Optionally invalidate the list on the parent page if status is displayed there
+             // queryClient.invalidateQueries({ queryKey: ['variations', data.version_id] });
+        },
+        onError: (error) => {
+            toast.error(error.message);
+        },
+    });
+};
+
 // --- Component ---
 export default function VariationDetailPage() {
     const { supabase } = useAuth();
@@ -94,6 +149,20 @@ export default function VariationDetailPage() {
     const designId = params.designId as string;
     const versionId = params.versionId as string;
     const variationId = params.variationId as string;
+    const queryClient = useQueryClient();
+    const [isEditingVariation, setIsEditingVariation] = useState(false);
+
+    // --- Form Hooks ---
+    const {
+        register: registerVariationEdit,
+        handleSubmit: handleSubmitVariationEdit,
+        control: variationEditControl,
+        reset: resetVariationEditForm,
+        formState: { errors: variationEditFormErrors, isSubmitting: isSubmittingVariationEdit },
+    } = useForm<VariationEditFormData>({
+        resolver: zodResolver(variationEditSchema),
+        // Default values set when entering edit mode
+    });
 
     // --- Queries ---
     const { data: project, isLoading: isLoadingProject } = useQuery<Project | null>({
@@ -122,6 +191,32 @@ export default function VariationDetailPage() {
         queryFn: () => fetchVariation(supabase, variationId),
         enabled: !!supabase && !!variationId,
     });
+
+    // --- Mutations ---
+    const updateVariationMutation = useUpdateVariation(variationId);
+
+    // --- Handlers ---
+    const handleVariationEditSubmit = (values: VariationEditFormData) => {
+        updateVariationMutation.mutate(values, {
+            onSuccess: () => {
+                setIsEditingVariation(false);
+            }
+        });
+    };
+
+    const handleEnterEditMode = () => {
+        if (variation) {
+            resetVariationEditForm({
+                notes: variation.notes || '',
+                status: variation.status,
+            });
+            setIsEditingVariation(true);
+        }
+    };
+
+    const handleCancelEditMode = () => {
+        setIsEditingVariation(false);
+    };
 
     // --- Loading & Error States ---
     if (isLoadingProject || isLoadingDesign || isLoadingVersion || isLoadingVariation) {
@@ -165,23 +260,75 @@ export default function VariationDetailPage() {
                      <div className="flex justify-between items-start gap-4">
                         <div>
                             <CardTitle className="text-2xl mb-1">Variation {variation.variation_letter}</CardTitle>
-                            <CardDescription>
-                                Status: <Badge variant="secondary">{variation.status}</Badge>
-                                {/* TODO: Add dropdown to change variation status */}
-                            </CardDescription>
+                            <CardDescription>Details and feedback for this variation.</CardDescription>
                         </div>
-                        {/* TODO: Add Edit Variation Button */} 
-                        {/* <Button variant="ghost" size="icon" disabled> 
-                            <Pencil className="h-4 w-4" /> 
-                        </Button> */} 
+                        {!isEditingVariation && (
+                            <Button variant="outline" size="sm" onClick={handleEnterEditMode}>
+                                <Pencil className="h-4 w-4 mr-2" />
+                                Edit Variation
+                            </Button>
+                        )}
                     </div>
                 </CardHeader>
                 <CardContent>
-                    {variation.notes ? (
-                        <p className="whitespace-pre-wrap mb-4">Notes: {variation.notes}</p>
+                    {isEditingVariation ? (
+                        <form onSubmit={handleSubmitVariationEdit(handleVariationEditSubmit)} className="space-y-4 mb-6">
+                            {/* Status Select */}
+                            <div className="space-y-1">
+                                <Label htmlFor="status">Status</Label>
+                                 <Controller
+                                    name="status"
+                                    control={variationEditControl}
+                                    render={({ field }) => (
+                                        <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                            <SelectTrigger id="status">
+                                                <SelectValue placeholder="Select status..." />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {variationFeedbackStatuses.map((status) => (
+                                                    <SelectItem key={status} value={status}>
+                                                        {status}
+                                                    </SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    )}
+                                />
+                                 {variationEditFormErrors.status && <p className="text-sm text-red-600">{variationEditFormErrors.status.message}</p>}
+                            </div>
+
+                            {/* Notes Textarea */}
+                            <div className="space-y-1">
+                                <Label htmlFor="notes">Notes</Label>
+                                <Textarea
+                                    id="notes"
+                                    placeholder="Add any notes relevant to this variation..."
+                                    {...registerVariationEdit("notes")}
+                                    rows={3}
+                                />
+                                {variationEditFormErrors.notes && <p className="text-sm text-red-600">{variationEditFormErrors.notes.message}</p>}
+                            </div>
+
+                            {/* Action Buttons */}
+                            <div className="flex justify-end space-x-2 pt-2">
+                                 <Button type="button" variant="outline" onClick={handleCancelEditMode} disabled={isSubmittingVariationEdit}>
+                                    Cancel
+                                </Button>
+                                <Button type="submit" disabled={isSubmittingVariationEdit || updateVariationMutation.isPending}>
+                                    {isSubmittingVariationEdit || updateVariationMutation.isPending ? (
+                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    ) : null}
+                                    Save Changes
+                                </Button>
+                            </div>
+                        </form>
                     ) : (
-                        <p className="italic text-muted-foreground mb-4">No notes provided for this variation.</p>
-                    )}
+                        <div className="space-y-2 mb-4">
+                             <p><strong>Status:</strong> <Badge variant="secondary">{variation.status}</Badge></p>
+                             <p><strong>Notes:</strong> {variation.notes || <span className="text-muted-foreground">No notes added.</span>}</p>
+                             <p className="text-sm text-muted-foreground">Created: {new Date(variation.created_at).toLocaleDateString()}</p>
+                        </div>
+                   )}
 
                     {/* Placeholder for Feedback Section */}
                     <div className="mt-6 border-t pt-4">
