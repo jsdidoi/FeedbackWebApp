@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/providers/AuthProvider';
 import { useParams } from 'next/navigation';
@@ -35,6 +35,21 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { toast } from 'sonner';
+import Dropzone from '@/components/ui/dropzone';
+import { Progress } from "@/components/ui/progress";
+
+// Assuming UploadingFileInfo is defined globally or in a types file
+// For now, define it here:
+interface UploadingFileInfo {
+  id: string;
+  file: File;
+  previewUrl: string;
+  status: 'pending' | 'uploading' | 'success' | 'error' | 'cancelled';
+  progress: number;
+  error?: string;
+  xhr?: XMLHttpRequest; // May not be needed here yet
+  uploadStarted: boolean;
+}
 
 // Import the Project type - ideally share this from a types file later
 type ProjectStatus = 'Pending' | 'In Progress' | 'In Review' | 'Approved' | 'Needs Changes' | 'Completed' | 'Archived';
@@ -170,6 +185,137 @@ const useAddDesign = (projectId: string) => {
     });
 };
 
+// --- NEW: Hook to Create Design/Version/Variation from Upload --- 
+const useCreateDesignFromUpload = (
+    projectId: string,
+    setUploadQueue: React.Dispatch<React.SetStateAction<UploadingFileInfo[]>>
+) => {
+    const { supabase } = useAuth();
+    const queryClient = useQueryClient();
+
+    // Define types for nested inserts if not already defined
+    // These might need adjustment based on your actual DB schema defaults/constraints
+    type NewVersionData = { design_id: string; version_number: number; status: string; /* add stage if needed */ };
+    type NewVariationData = { version_id: string; variation_letter: string; status: string; };
+
+    return useMutation({
+        // Expect an object with file and its queue ID
+        mutationFn: async ({ file, fileId }: { file: File, fileId: string }) => {
+            if (!supabase) throw new Error("Supabase client not available");
+            if (!projectId) throw new Error("Project ID is required");
+
+            // Rename variables to avoid conflict
+            let createdDesignId = '';
+            let createdVersionId = '';
+            let createdVariationId = '';
+            let finalFilePath = '';
+
+            try {
+                // --- 1. Create Design --- 
+                // Use filename without extension as initial design name
+                const designName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
+                const { data: newDesign, error: designError } = await supabase
+                    .from('designs')
+                    .insert({ project_id: projectId, name: designName, status: 'Active' })
+                    .select()
+                    .single();
+                
+                if (designError) throw new Error(`Failed to create design: ${designError.message}`);
+                if (!newDesign) throw new Error('Failed to create design, no data returned.');
+                createdDesignId = newDesign.id;
+                console.log(`[CreateDesignUpload] Created Design: ${createdDesignId} (${designName})`);
+
+                // --- 2. Create Version (V1) --- 
+                const versionData: NewVersionData = { design_id: createdDesignId, version_number: 1, status: 'Work in Progress' };
+                const { data: newVersion, error: versionError } = await supabase
+                    .from('versions')
+                    .insert(versionData)
+                    .select()
+                    .single();
+
+                if (versionError) throw new Error(`Failed to create version 1 for design ${createdDesignId}: ${versionError.message}`);
+                if (!newVersion) throw new Error('Failed to create version, no data returned.');
+                createdVersionId = newVersion.id;
+                console.log(`[CreateDesignUpload] Created Version: ${createdVersionId} (V1)`);
+
+                // --- 3. Create Variation (A) --- 
+                const variationData: NewVariationData = { version_id: createdVersionId, variation_letter: 'A', status: 'Pending Feedback' }; 
+                const { data: newVariation, error: variationError } = await supabase
+                    .from('variations')
+                    .insert(variationData)
+                    .select()
+                    .single();
+
+                if (variationError) throw new Error(`Failed to create variation A for version ${createdVersionId}: ${variationError.message}`);
+                if (!newVariation) throw new Error('Failed to create variation, no data returned.');
+                createdVariationId = newVariation.id;
+                console.log(`[CreateDesignUpload] Created Variation: ${createdVariationId} (A)`);
+
+                // --- 4. Upload File --- 
+                finalFilePath = `projects/${projectId}/designs/${createdDesignId}/versions/${createdVersionId}/variations/${createdVariationId}/${file.name}`;
+                const bucketName = 'design-variations';
+                
+                console.log(`[CreateDesignUpload] Attempting upload to: ${finalFilePath}`);
+                const { error: uploadError } = await supabase.storage
+                    .from(bucketName)
+                    .upload(finalFilePath, file, { upsert: true }); // Use direct upload here
+
+                if (uploadError) {
+                     console.error(`[CreateDesignUpload] Upload failed for ${file.name}:`, uploadError);
+                     throw new Error(`Storage upload failed: ${uploadError.message}`);
+                }
+                console.log(`[CreateDesignUpload] Successfully uploaded ${file.name} to ${finalFilePath}`);
+
+                // --- 5. Update Variation with File Path --- 
+                const { error: updateError } = await supabase
+                    .from('variations')
+                    .update({ file_path: finalFilePath })
+                    .eq('id', createdVariationId);
+
+                if (updateError) {
+                    console.error(`[CreateDesignUpload] Failed to update variation ${createdVariationId} with file path ${finalFilePath}:`, updateError);
+                    toast.warning(`File ${file.name} uploaded, but failed to link to variation record.`);
+                }
+                 console.log(`[CreateDesignUpload] Successfully linked ${finalFilePath} to variation ${createdVariationId}`);
+
+                // Return the created design info AND the original fileId
+                return { ...newDesign, filePath: finalFilePath, originalFileId: fileId }; 
+
+            } catch (error: any) {
+                 console.error(`[CreateDesignUpload] CRITICAL FAILURE for file ${file.name}:`, error);
+                // Cleanup hints using created IDs
+                if (createdDesignId) console.error(`[Cleanup Hint] May need to clean up design: ${createdDesignId}`);
+                if (createdVersionId) console.error(`[Cleanup Hint] May need to clean up version: ${createdVersionId}`);
+                if (createdVariationId) console.error(`[Cleanup Hint] May need to clean up variation: ${createdVariationId}`);
+                // Add the fileId to the re-thrown error context? Maybe not necessary.
+                 throw error;
+            }
+        },
+        onSuccess: (data, variables) => {
+            // variables = { file: File, fileId: string }
+            // data = { ...newDesign, filePath: string, originalFileId: string }
+            toast.success(`Design "${data.name}" created and file "${variables.file.name}" uploaded successfully!`);
+            queryClient.invalidateQueries({ queryKey: ['designs', projectId] }); 
+            // Remove successfully uploaded file from queue using the originalFileId from data
+            setUploadQueue(prevQueue => 
+                prevQueue.filter(f => f.id !== data.originalFileId)
+            );
+        },
+        onError: (error: Error, variables) => {
+             // variables = { file: File, fileId: string }
+             toast.error(`Failed to create design from file "${variables.file.name}": ${error.message}`);
+             // Mark file as error in queue using the fileId from variables
+             setUploadQueue(prevQueue => 
+                prevQueue.map(f => 
+                    f.id === variables.fileId 
+                        ? { ...f, status: 'error', error: error.message, uploadStarted: false } 
+                        : f
+                )
+            ); 
+        },
+    });
+};
+
 // --- Update Project Details Hook ---
 const useUpdateProjectDetails = (projectId: string) => {
     const { supabase } = useAuth();
@@ -222,6 +368,13 @@ export default function ProjectDetailPage() {
     const [editedProjectName, setEditedProjectName] = useState('');
     const [editedProjectDescription, setEditedProjectDescription] = useState<string | null>('');
 
+    // --- Upload State --- Added
+    const [uploadQueue, setUploadQueue] = useState<UploadingFileInfo[]>([]);
+    const uploadQueueRef = useRef(uploadQueue);
+
+    // Concurrency Limit - ADDED
+    const MAX_CONCURRENT_UPLOADS = 3;
+
     // Form hook for Add Design
     const {
         register: registerDesign,
@@ -251,6 +404,110 @@ export default function ProjectDetailPage() {
     
     // Add Design Mutation
     const addDesignMutation = useAddDesign(projectId);
+
+    // --- Upload Related Constants and Handlers --- Added
+    const acceptedFileTypes = {
+        'image/jpeg': ['.jpg', '.jpeg'],
+        'image/png': ['.png'],
+        'image/gif': ['.gif'],
+        'image/webp': ['.webp'],
+        'image/svg+xml': ['.svg'],
+        'application/postscript': ['.ai'],
+        'application/photoshop': ['.psd'],
+        'image/vnd.adobe.photoshop': ['.psd']
+    };
+
+    const onFilesAccepted = useCallback((acceptedFiles: File[]) => {
+        console.log('PROJECT LEVEL - Batch Accepted files:', acceptedFiles);
+        const newUploads: UploadingFileInfo[] = acceptedFiles.map(file => ({
+            id: `${file.name}-${file.lastModified}-${Math.random()}`, // Simple unique ID
+            file: file,
+            previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : '',
+            status: 'pending',
+            progress: 0,
+            uploadStarted: false,
+        }));
+        setUploadQueue(prevQueue => [...prevQueue, ...newUploads]);
+    }, [setUploadQueue]); // Dependency added
+
+    const onFilesRejected = useCallback((fileRejections: any[]) => {
+        console.log('PROJECT LEVEL - Rejected files:', fileRejections);
+        fileRejections.forEach(rejection => {
+            toast.error(`File rejected: ${rejection.file.name} - ${rejection.errors[0]?.message || 'Invalid file'}`);
+        });
+    }, []); // Dependency array is empty as it only uses toast
+
+    // --- Instantiate Mutation Hook --- Pass setUploadQueue again
+    const createDesignMutation = useCreateDesignFromUpload(projectId, setUploadQueue);
+
+    // --- Function to Start Project-Level Upload --- MODIFIED
+    const startProjectUpload = useCallback((fileId: string) => {
+        // --- Mark as started immediately --- 
+        setUploadQueue(prev => prev.map(f => f.id === fileId ? { ...f, uploadStarted: true } : f));
+        // -------------------------------------
+
+        const fileInfo = uploadQueueRef.current.find(f => f.id === fileId);
+
+        if (!fileInfo || fileInfo.status !== 'uploading') {
+            console.warn(`[startProjectUpload] Skipping ${fileId}. File not found or status changed unexpectedly before processing.`);
+            return;
+        }
+
+        console.log(`[startProjectUpload] Initiating createDesign mutation for ${fileInfo.file.name} (ID: ${fileId})`);
+
+        // Call the mutation with BOTH the file and its ID - NO local callbacks
+        createDesignMutation.mutate({ file: fileInfo.file, fileId: fileInfo.id });
+
+    }, [createDesignMutation, setUploadQueue]); // Keep dependencies minimal
+
+    // --- Effects --- Added
+    // Effect to keep the ref updated with the latest queue state
+    useEffect(() => {
+        uploadQueueRef.current = uploadQueue;
+    }, [uploadQueue]);
+
+    // Effect to cleanup preview URLs
+    useEffect(() => {
+        const currentQueue = uploadQueueRef.current; // Capture ref value at effect setup
+        return () => {
+            console.log("Cleaning up Dropzone preview URLs...");
+            currentQueue.forEach(fileInfo => {
+                if (fileInfo.previewUrl) {
+                     console.log(`Revoking URL for ${fileInfo.file.name}: ${fileInfo.previewUrl}`);
+                     URL.revokeObjectURL(fileInfo.previewUrl);
+                }
+            });
+        }
+    }, []); // Empty dependency array means this cleanup runs on unmount
+
+    // --- Upload Management Effect (Marking Pending -> Uploading) --- Simplified Deps & Logging Check
+    useEffect(() => {
+        // Removed !supabase check - assume it's available if component renders
+        
+        const uploadingCount = uploadQueue.filter(f => f.status === 'uploading').length;
+        const pendingFiles = uploadQueue.filter(f => f.status === 'pending');
+        const slotsAvailable = MAX_CONCURRENT_UPLOADS - uploadingCount;
+
+        console.log(`[Marking Effect] Status: Uploading=${uploadingCount}, Pending=${pendingFiles.length}, Slots=${slotsAvailable}`);
+
+        if (slotsAvailable > 0 && pendingFiles.length > 0) {
+            const filesToMarkUploading = pendingFiles.slice(0, slotsAvailable);
+            const filesToMarkIds = filesToMarkUploading.map(f => f.id);
+            console.log(`[Marking Effect] Marking ${filesToMarkIds.length} files as 'uploading':`, filesToMarkIds);
+
+            setUploadQueue(currentQueue => {
+                 console.log("[Marking Effect] Running setUploadQueue to change status...");
+                 return currentQueue.map(fileInfo => 
+                    filesToMarkIds.includes(fileInfo.id)
+                        ? { ...fileInfo, status: 'uploading' } 
+                        : fileInfo
+                 );
+            });
+        } else {
+             console.log("[Marking Effect] No slots available or no pending files.");
+        }
+    // DEPEND ONLY ON uploadQueue
+    }, [uploadQueue]); 
 
     // Effect to initialize project edit state
     useEffect(() => {
@@ -323,6 +580,23 @@ export default function ProjectDetailPage() {
             },
         });
     };
+
+    // --- New Effect for executing uploads (Corrected Filter) --- 
+    useEffect(() => {
+        // Find files that are marked as 'uploading' AND haven't been started
+        const filesToActuallyStart = uploadQueue.filter(
+            (fileInfo) => fileInfo.status === 'uploading' && !fileInfo.uploadStarted // Added check for flag
+        );
+
+        if (filesToActuallyStart.length > 0) {
+             console.log(`[Project Upload Trigger Effect] Found ${filesToActuallyStart.length} file(s) ready to start upload process.`);
+             filesToActuallyStart.forEach((fileInfo) => {
+                // Call the function that marks as started and triggers the mutation
+                startProjectUpload(fileInfo.id);
+            });
+        }
+    // Depend on the queue and the function that starts the upload
+    }, [uploadQueue, startProjectUpload]);
 
     if (isLoadingProject) {
         return <div className="flex justify-center items-center h-screen"><Loader2 className="h-8 w-8 animate-spin" /> Loading Project...</div>;
@@ -489,6 +763,89 @@ Enter the name for the new design. The initial stage will be 'Sketch'.
                    ) : (
                      <p className="italic text-muted-foreground text-center p-4">No designs have been added to this project yet.</p>
                    )}
+                </CardContent>
+            </Card>
+
+            {/* --- Card for Uploading New Designs --- Added */}
+            <Card>
+                <CardHeader>
+                    <CardTitle>Upload New Designs</CardTitle>
+                    <CardDescription>Upload one or more design files. Each file will become a new design entry (V1/A).</CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <Dropzone
+                        onFilesAccepted={onFilesAccepted}
+                        onFilesRejected={onFilesRejected}
+                        accept={acceptedFileTypes}
+                        maxSize={10 * 1024 * 1024} // 10MB limit
+                        multiple={true}
+                        className="mb-4"
+                        // disabled={uploadQueue.some(f => f.status === 'uploading')} // Example disabled logic
+                    />
+
+                    {/* Display Upload Queue & Progress */}
+                    {uploadQueue.length > 0 && (
+                        <div className="mt-4 space-y-3">
+                            <h4 className="text-sm font-medium mb-2">Upload Queue (New Designs):</h4>
+                            {uploadQueue.map((fileInfo) => (
+                                <div key={fileInfo.id} className="text-sm border p-3 rounded-md space-y-2">
+                                    {/* File Info Row */}
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-2 overflow-hidden">
+                                            {/* Preview Image */}
+                                            {fileInfo.previewUrl ? (
+                                                <img
+                                                    src={fileInfo.previewUrl}
+                                                    alt={`Preview of ${fileInfo.file.name}`}
+                                                    className="h-10 w-10 object-contain border rounded-sm flex-shrink-0"
+                                                    onLoad={() => {
+                                                        // Optional: Log when preview successfully loads
+                                                        // console.log(`Preview loaded for ${fileInfo.file.name}`);
+                                                    }}
+                                                    onError={() => {
+                                                         // Optional: Log if preview fails to load
+                                                         // console.error(`Preview failed to load for ${fileInfo.file.name}`);
+                                                     }}
+                                                />
+                                            ) : (
+                                                <div className="h-10 w-10 flex items-center justify-center border rounded-sm bg-muted text-muted-foreground text-xs flex-shrink-0">
+                                                    File Icon
+                                                </div>
+                                            )}
+                                            {/* Filename & Size */}
+                                            <span className="truncate" title={fileInfo.file.name}>
+                                                {fileInfo.file.name} ({(fileInfo.file.size / 1024).toFixed(2)} KB)
+                                            </span>
+                                        </div>
+                                        {/* Cancel Button (Add Functionality Later) */}
+                                        {(fileInfo.status === 'pending' || fileInfo.status === 'uploading') && (
+                                            <Button
+                                                size="icon"
+                                                variant="ghost"
+                                                onClick={() => {/* TODO: Implement cancelUpload */ console.log(`Cancel ${fileInfo.id}`) }}
+                                                title="Remove from queue"
+                                                className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                                            >
+                                                <X className="h-4 w-4"/>
+                                            </Button>
+                                        )}
+                                    </div>
+                                    {/* Status Text */}
+                                    <p className={`text-xs ${fileInfo.status === 'error' ? 'text-red-600' : 'text-muted-foreground'}`}>
+                                       Status: {fileInfo.status} {fileInfo.status === 'uploading' ? `(${fileInfo.progress}%)` : ''}
+                                    </p>
+                                    {/* Progress Bar */}
+                                    {fileInfo.status === 'uploading' && (
+                                        <Progress value={fileInfo.progress} className="h-1" />
+                                    )}
+                                    {/* Error Message */}
+                                    {fileInfo.status === 'error' && (
+                                        <p className="text-xs text-red-600">Error: {fileInfo.error}</p>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </CardContent>
             </Card>
 

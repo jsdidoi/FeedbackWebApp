@@ -43,57 +43,24 @@ import { Controller, useForm as useVersionForm } from 'react-hook-form';
 import { zodResolver as versionZodResolver } from '@hookform/resolvers/zod';
 import * as versionZod from 'zod';
 
-// Import Project and Design types (ideally from shared types file)
-type Project = {
-    id: string;
-    name: string;
-    // Add other necessary project fields if needed for context
-};
+// --- Import types from central location --- 
+import {
+    Project,
+    Design,
+    Version,
+    DesignStage,
+    DesignOverallStatus,
+    VersionRoundStatus,
+    NewVersionData,
+    DesignWithVersions,
+    versionRoundStatuses
+} from '@/types/models';
 
-// Use lowercase enum values matching the database schema
-const designStages = ['sketch', 'refine', 'color', 'final'] as const;
-type DesignStage = typeof designStages[number];
-
-const designOverallStatuses = ['Active', 'On Hold', 'Completed', 'Archived'] as const;
-type DesignOverallStatus = typeof designOverallStatuses[number];
-
-type Design = {
-    id: string;
-    project_id: string;
-    name: string;
-    status: DesignOverallStatus;
-    description: string | null;
-    created_at: string;
-    updated_at: string;
-    created_by: string;
-};
-
-// Define Version type
-const versionRoundStatuses = ['Work in Progress', 'Ready for Review', 'Feedback Received', 'Round Complete'] as const;
-type VersionRoundStatus = typeof versionRoundStatuses[number]; 
-type Version = {
-    id: string;
-    design_id: string;
-    version_number: number; 
-    notes: string | null;
-    stage: DesignStage;
-    status: VersionRoundStatus;
-    created_at: string;
-};
-
-// Type for inserting a new version
-type NewVersion = {
-    design_id: string;
-    version_number: number;
-    notes: string | null;
-    stage: DesignStage;
-    status: VersionRoundStatus;
-};
-
-// --- Zod Schema for New Version Form ---
+// --- Zod Schema for New Version Form --- 
 const versionSchema = versionZod.object({
   notes: versionZod.string().optional(),
-  stage: versionZod.enum(designStages, { 
+  // Use the DesignStage enum for nativeEnum validation
+  stage: versionZod.nativeEnum(DesignStage, { 
       required_error: "Stage is required",
       invalid_type_error: "Invalid stage selected", 
   }),
@@ -229,7 +196,7 @@ const useAddVersion = (designId: string) => {
             const nextVersionNumber = latestVersion ? latestVersion.version_number + 1 : 1;
 
             // 2. Prepare insert data
-            const insertData: NewVersion = {
+            const insertData: NewVersionData = {
                 design_id: designId,
                 version_number: nextVersionNumber,
                 notes: newVersionData.notes || null,
@@ -260,6 +227,67 @@ const useAddVersion = (designId: string) => {
     });
 };
 
+// Fetch function for a single design and its versions
+const fetchDesignWithVersions = async (supabase: any, designId: string): Promise<DesignWithVersions | null> => {
+    if (!supabase || !designId) return null;
+
+    // 1. Fetch the design by designId
+    const { data: design, error: designError } = await supabase
+        .from('designs')
+        .select(`
+            id,
+            project_id,
+            name,
+            description,
+            status,
+            created_at,
+            updated_at,
+            created_by
+        `)
+        .eq('id', designId)
+        .maybeSingle(); // Use maybeSingle to handle not found gracefully
+
+    if (designError) {
+        console.error('Error fetching design:', designError);
+        throw new Error(`Failed to fetch design: ${designError.message}`);
+    }
+
+    // If design not found, return null
+    if (!design) {
+        console.log(`Design with ID ${designId} not found.`);
+        return null;
+    }
+
+    // 2. Fetch all versions where version.design_id === designId
+    const { data: versions, error: versionsError } = await supabase
+        .from('versions')
+        .select(`
+            id,
+            design_id,
+            version_number,
+            status, 
+            created_at,
+            updated_at
+        `)
+        .eq('design_id', designId)
+        .order('version_number', { ascending: true });
+
+    if (versionsError) {
+        console.error('Error fetching versions for design:', versionsError);
+        // Don't necessarily throw; maybe return design with empty versions?
+        // For now, let's throw to indicate a problem.
+        throw new Error(`Failed to fetch versions: ${versionsError.message}`);
+    }
+
+    // 3. Combine results
+    const result: DesignWithVersions = {
+        ...design,
+        versions: (versions as Version[]) || [], // Ensure versions is an array
+    };
+
+    return result;
+};
+
 export default function DesignDetailPage() {
     const { supabase } = useAuth();
     const params = useParams();
@@ -281,11 +309,11 @@ export default function DesignDetailPage() {
         staleTime: Infinity, // Project name unlikely to change often while viewing design
     });
 
-    // Fetch Design details
-    const { data: design, isLoading: isLoadingDesign, error: designError, isError: isDesignError } = useQuery<Design | null>({
-        queryKey: ['design', projectId, designId],
-        queryFn: () => fetchDesign(supabase, projectId, designId),
-        enabled: !!supabase && !!projectId && !!designId,
+    // Fetch Design details with its versions
+    const { data: designData, isLoading: isLoadingDesign, error: designError } = useQuery<DesignWithVersions | null>({
+        queryKey: ['design', designId, 'versions'],
+        queryFn: () => fetchDesignWithVersions(supabase, designId),
+        enabled: !!supabase && !!designId,
     });
 
     // Fetch Versions for this design
@@ -297,11 +325,11 @@ export default function DesignDetailPage() {
 
     // Effect to initialize edit state when design data loads
     useEffect(() => {
-        if (design && !isEditing) {
-            setEditedName(design.name);
-            setEditedDescription(design.description || '');
+        if (designData && !isEditing) {
+            setEditedName(designData.name);
+            setEditedDescription(designData.description || '');
         }
-    }, [design, isEditing]);
+    }, [designData, isEditing]);
 
     // Mutations
     const updateDetailsMutation = useUpdateDesignDetails(designId, projectId);
@@ -324,24 +352,24 @@ export default function DesignDetailPage() {
 
     // --- Edit Handlers ---
     const handleEditClick = () => {
-        if (!design) return;
-        setEditedName(design.name);
-        setEditedDescription(design.description || '');
+        if (!designData) return;
+        setEditedName(designData.name);
+        setEditedDescription(designData.description || '');
         setIsEditing(true);
     };
 
     const handleCancelClick = () => {
         setIsEditing(false);
-        if (design) {
-            setEditedName(design.name);
-            setEditedDescription(design.description || '');
+        if (designData) {
+            setEditedName(designData.name);
+            setEditedDescription(designData.description || '');
         }
     };
 
     const handleSaveClick = () => {
-        if (!design) return;
+        if (!designData) return;
         const trimmedName = editedName.trim();
-        const currentDescription = design.description || '';
+        const currentDescription = designData.description || '';
         const newDescription = editedDescription || '';
 
         if (!trimmedName) {
@@ -349,7 +377,7 @@ export default function DesignDetailPage() {
             return;
         }
         
-        const nameChanged = trimmedName !== design.name;
+        const nameChanged = trimmedName !== designData.name;
         const descriptionChanged = newDescription !== currentDescription;
 
         if (!nameChanged && !descriptionChanged) {
@@ -384,11 +412,11 @@ export default function DesignDetailPage() {
     }
 
     // Error State
-    if (isDesignError || !design) {
+    if (designError) {
         return (
             <div className="container mx-auto p-4">
-                <h1 className="text-2xl font-bold text-red-600">Error</h1>
-                <p>{designError ? designError.message : 'Design not found.'}</p>
+                <h1 className="text-2xl font-bold text-red-600">Error Loading Design</h1>
+                <p>{(designError as Error)?.message || 'An unknown error occurred.'}</p>
                 <Link href={`/projects/${projectId}`} className="text-blue-600 hover:underline mt-4 inline-block">
                     Return to Project
                 </Link>
@@ -396,14 +424,23 @@ export default function DesignDetailPage() {
         );
     }
 
-    // This check is crucial for TypeScript and rendering
-    if (!design) return null; 
+    if (!designData) {
+        return (
+            <div className="container mx-auto p-4">
+                <h1 className="text-2xl font-bold">Design Not Found</h1>
+                <p>The requested design could not be found.</p>
+                 <Link href={`/projects/${projectId}`} className="text-blue-600 hover:underline mt-4 inline-block">
+                    Return to Project
+                </Link>
+            </div>
+        );
+    }
 
-    // Define breadcrumb items once project and design data are available
+    // Define breadcrumb items
     const breadcrumbItems: BreadcrumbItem[] = [
         { label: 'Dashboard', href: '/dashboard' },
         { label: project?.name ?? 'Project', href: `/projects/${projectId}` },
-        { label: design.name } // Can safely use design.name after the check
+        { label: designData.name } // Current design page
     ];
 
     return (
@@ -424,7 +461,7 @@ export default function DesignDetailPage() {
                                     disabled={updateDetailsMutation.isPending} 
                                 />
                            ) : (
-                               <CardTitle className="text-2xl mb-1">{design.name}</CardTitle>
+                               <CardTitle className="text-2xl mb-1">{designData.name}</CardTitle>
                            )}
                             <CardDescription>
                                 Part of project: <Link href={`/projects/${projectId}`} className="hover:underline">{project?.name ?? '...'}</Link>
@@ -452,8 +489,8 @@ export default function DesignDetailPage() {
 
                            {/* Display Overall Design Status */} 
                            {!isEditing && (
-                               <Badge variant={design.status === 'Completed' || design.status === 'Archived' ? 'default' : 'secondary'}>
-                                   {design.status}
+                               <Badge variant={designData.status === 'Completed' || designData.status === 'Archived' ? 'default' : 'secondary'}>
+                                   {designData.status}
                                </Badge>
                             )}
                         </div>
@@ -470,14 +507,14 @@ export default function DesignDetailPage() {
                             rows={4}
                             disabled={updateDetailsMutation.isPending}
                         />
-                    ) : design.description ? (
-                        <p className="mb-4 whitespace-pre-wrap">{design.description}</p>
+                    ) : designData.description ? (
+                        <p className="mb-4 whitespace-pre-wrap">{designData.description}</p>
                     ) : (
                         <p className="italic text-muted-foreground mb-4">No description provided for this design.</p>
                     )}
                     
                     <p className="text-sm text-muted-foreground mt-4">
-                        Created: {new Date(design.created_at).toLocaleDateString()}
+                        Created: {new Date(designData.created_at).toLocaleDateString()}
                     </p>
                 </CardContent>
             </Card>
@@ -487,20 +524,21 @@ export default function DesignDetailPage() {
                 <CardHeader className="flex flex-row items-center justify-between">
                     <div>
                         <CardTitle>Versions</CardTitle>
-                        <CardDescription>Versions of this design.</CardDescription>
+                        <CardDescription>Versions associated with this design.</CardDescription>
                     </div>
-                    {/* Add Version Button & Dialog */}
+                    {/* Add Version Button & Dialog Trigger */}
                     <VersionDialog open={isAddVersionDialogOpen} onOpenChange={setIsAddVersionDialogOpen}>
                         <VersionDialogTrigger asChild>
                             <Button size="sm" disabled={addVersionMutation.isPending}> 
                                 <PlusCircle className="mr-2 h-4 w-4" /> Add Version
                             </Button>
                         </VersionDialogTrigger>
+                        {/* --- Add Version Dialog Content --- */}
                         <VersionDialogContent className="sm:max-w-[425px]">
                             <VersionDialogHeader>
-                                <VersionDialogTitle>Add New Version</VersionDialogTitle>
+                                <VersionDialogTitle>Add New Version V{versions ? (versions[versions.length - 1]?.version_number ?? 0) + 1 : 1}</VersionDialogTitle>
                                 <VersionDialogDescription>
-Select the stage for this new version (V{versions ? (versions[versions.length - 1]?.version_number ?? 0) + 1 : 1}) and add optional notes. Status will be 'Work in Progress'.
+Select the stage for this new version and add optional notes. Status will default to 'Work in Progress'.
                                 </VersionDialogDescription>
                             </VersionDialogHeader>
                             <form onSubmit={handleSubmitVersion(handleAddVersionSubmit)} className="space-y-4">
@@ -514,14 +552,15 @@ Select the stage for this new version (V{versions ? (versions[versions.length - 
                                         render={({ field }) => (
                                             <Select 
                                                 onValueChange={field.onChange}
-                                                defaultValue={field.value}
+                                                defaultValue={field.value} // Use defaultValue for initial render
                                                 disabled={addVersionMutation.isPending}
                                             >
                                                 <SelectTrigger id="versionStage">
                                                     <SelectValue placeholder="Select stage..." />
                                                 </SelectTrigger>
                                                 <SelectContent>
-                                                    {designStages.map(stage => (
+                                                    {/* Use Object.values for enums */} 
+                                                    {Object.values(DesignStage).map(stage => (
                                                         <SelectItem key={stage} value={stage}>{stage}</SelectItem>
                                                     ))}
                                                 </SelectContent>
@@ -539,14 +578,18 @@ Select the stage for this new version (V{versions ? (versions[versions.length - 
                                         rows={4}
                                         {...registerVersion("notes")} 
                                         disabled={addVersionMutation.isPending}
+                                        placeholder="Add any relevant notes for this version..."
                                     />
+                                    {/* Optional: Add error display for notes if validation added */}
                                 </div>
                                 <VersionDialogFooter>
                                     <VersionDialogClose asChild>
                                         <Button type="button" variant="outline" disabled={addVersionMutation.isPending}>Cancel</Button>
                                     </VersionDialogClose>
                                     <Button type="submit" disabled={addVersionMutation.isPending}>
-                                        {addVersionMutation.isPending ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Adding...</> : `Add Version V${versions ? (versions[versions.length - 1]?.version_number ?? 0) + 1 : 1}`}
+                                        {addVersionMutation.isPending 
+                                            ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Adding...</> 
+                                            : `Add Version V${versions ? (versions[versions.length - 1]?.version_number ?? 0) + 1 : 1}`}
                                     </Button>
                                 </VersionDialogFooter>
                             </form>
@@ -554,40 +597,46 @@ Select the stage for this new version (V{versions ? (versions[versions.length - 
                     </VersionDialog>
                 </CardHeader>
                 <CardContent>
-                   {isLoadingVersions ? (
+                   {isLoadingDesign ? (
                      <div className="flex justify-center items-center p-4"><Loader2 className="h-6 w-6 animate-spin" /> Loading Versions...</div>
-                   ) : versionsError ? (
-                     <p className="text-red-600">Error loading versions: {versionsError.message}</p>
-                   ) : versions && versions.length > 0 ? (
-                     <Table>
-                        <TableHeader>
-                            <TableRow>
-                                <TableHead>Version</TableHead>
-                                <TableHead>Stage</TableHead> 
-                                <TableHead>Status</TableHead>
-                                <TableHead className="text-right">Created</TableHead>
-                            </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                            {versions.map((version) => (
-                                <TableRow key={version.id}>
-                                    <TableCell className="font-medium">
-                                        <Link href={`/projects/${projectId}/designs/${designId}/versions/${version.id}`} className="hover:underline">
-                                           V{version.version_number}
-                                        </Link>
-                                    </TableCell>
-                                    <TableCell><Badge variant="outline">{version.stage}</Badge></TableCell> 
-                                    <TableCell><Badge variant="secondary">{version.status}</Badge></TableCell>
-                                    <TableCell className="text-right">
-                                        {new Date(version.created_at).toLocaleDateString()}
-                                    </TableCell>
+                   ) : designData.versions && designData.versions.length > 0 ? (
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead>Version</TableHead>
+                                    <TableHead>Status</TableHead>
+                                    <TableHead className="text-right">Created</TableHead>
                                 </TableRow>
-                            ))}
-                        </TableBody>
-                     </Table>
-                   ) : (
-                     <p className="italic text-muted-foreground text-center p-4">No versions have been created for this design yet.</p>
-                   )}
+                            </TableHeader>
+                            <TableBody>
+                                {designData.versions.map((version) => (
+                                    <TableRow key={version.id}>
+                                        <TableCell className="font-medium">
+                                            {/* Link to version detail page */}
+                                            <Link href={`/projects/${projectId}/designs/${designId}/versions/${version.id}`} className="hover:underline">
+                                                V{version.version_number}
+                                            </Link>
+                                        </TableCell>
+                                        <TableCell>
+                                            {/* Use Badge component with appropriate variant based on status */}
+                                            <Badge variant={
+                                                version.status === 'Round Complete' ? 'default' 
+                                                : version.status === 'Ready for Review' ? 'outline'
+                                                : 'secondary' // Default for WIP, Feedback Received
+                                            }>
+                                                {version.status}
+                                            </Badge>
+                                        </TableCell>
+                                        <TableCell className="text-right">
+                                            {new Date(version.created_at).toLocaleDateString()}
+                                        </TableCell>
+                                    </TableRow>
+                                ))}
+                            </TableBody>
+                        </Table>
+                    ) : (
+                        <p className="italic text-muted-foreground text-center p-4">No versions found for this design yet.</p>
+                    )}
                 </CardContent>
             </Card>
 

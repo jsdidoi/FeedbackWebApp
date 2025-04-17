@@ -1,12 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/providers/AuthProvider';
 import { useParams } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Pencil } from 'lucide-react';
+import { Loader2, Pencil, X } from 'lucide-react';
 import Link from 'next/link';
 import Breadcrumbs, { BreadcrumbItem } from '@/components/ui/breadcrumbs';
 import { Button } from '@/components/ui/button';
@@ -17,6 +17,9 @@ import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as zod from 'zod';
 import { toast } from 'sonner';
+import Dropzone from '@/components/ui/dropzone';
+import { Progress } from "@/components/ui/progress";
+import { useRef } from 'react';
 
 // --- Type Definitions ---
 // (Ideally share these globally)
@@ -40,7 +43,7 @@ type Variation = {
     notes: string | null;
     status: VariationFeedbackStatus;
     created_at: string;
-    // Add fields for image/file later, e.g., file_url?: string;
+    file_path: string | null; // Added field for storage path
 };
 
 // --- Zod Schema for Editing Variation ---
@@ -49,6 +52,17 @@ const variationEditSchema = zod.object({
   status: zod.enum(variationFeedbackStatuses),
 });
 type VariationEditFormData = zod.infer<typeof variationEditSchema>;
+
+// Interface for tracking individual file upload state
+interface UploadingFileInfo {
+  id: string;
+  file: File;
+  previewUrl: string;
+  status: 'pending' | 'uploading' | 'success' | 'error' | 'cancelled';
+  progress: number;
+  error?: string;
+  xhr?: XMLHttpRequest;
+}
 
 // --- Fetch Functions ---
 
@@ -90,12 +104,14 @@ const fetchVariation = async (supabase: any, variationId: string): Promise<Varia
     if (!variationId) return null;
     const { data, error } = await supabase
         .from('variations')
-        .select('id, version_id, variation_letter, notes, status, created_at') // Select needed fields
+        .select('id, version_id, variation_letter, notes, status, created_at, file_path') // Select new field
         .eq('id', variationId)
         .single();
-    if (error && error.code !== 'PGRST116') {
-        console.error('Error fetching variation:', error);
-        throw new Error(error.message);
+    
+    // Log the full error object for more details
+    if (error && error.code !== 'PGRST116') { // PGRST116 means "Resource not found", which is handled later
+        console.error('Error fetching variation (Full Error Object):', error); // Log the whole error object
+        throw new Error(error.message || 'Failed to fetch variation'); // Keep throwing a basic message
     }
     return data;
 };
@@ -141,6 +157,15 @@ const useUpdateVariation = (variationId: string) => {
     });
 };
 
+// --- Upload Hook Refactor (Removed - Logic integrated into component) ---
+// We'll manage the queue and individual uploads directly in the component state for now.
+
+// Helper function to get filename from path
+const getFilenameFromPath = (path: string | null | undefined): string | null => {
+    if (!path) return null;
+    return path.substring(path.lastIndexOf('/') + 1);
+};
+
 // --- Component ---
 export default function VariationDetailPage() {
     const { supabase } = useAuth();
@@ -151,6 +176,19 @@ export default function VariationDetailPage() {
     const variationId = params.variationId as string;
     const queryClient = useQueryClient();
     const [isEditingVariation, setIsEditingVariation] = useState(false);
+    
+    // State for upload queue
+    const [uploadQueue, setUploadQueue] = useState<UploadingFileInfo[]>([]); 
+    // Ref to hold the latest queue state for callbacks
+    const uploadQueueRef = useRef(uploadQueue);
+    
+    // State for existing file display
+    const [signedUrl, setSignedUrl] = useState<string | null>(null); 
+    const [urlLoading, setUrlLoading] = useState<boolean>(false);
+    const [urlError, setUrlError] = useState<string | null>(null);
+
+    // Concurrency Limit
+    const MAX_CONCURRENT_UPLOADS = 3;
 
     // --- Form Hooks ---
     const {
@@ -192,8 +230,273 @@ export default function VariationDetailPage() {
         enabled: !!supabase && !!variationId,
     });
 
-    // --- Mutations ---
-    const updateVariationMutation = useUpdateVariation(variationId);
+    // --- Effects ---
+    // Effect to keep the ref updated with the latest queue state
+    useEffect(() => {
+        uploadQueueRef.current = uploadQueue;
+    }, [uploadQueue]);
+
+    // Effect for generating signed URL for existing file
+    useEffect(() => {
+        if (variation?.file_path && supabase) {
+            const generateUrl = async () => {
+                setUrlLoading(true);
+                setUrlError(null);
+                setSignedUrl(null);
+                console.log('(Restored Logic) Attempting to create signed URL for path:', variation.file_path);
+                try {
+                    const { data, error } = await supabase.storage
+                        .from('design-variations') 
+                        .createSignedUrl(variation.file_path!, 60 * 5); // Add ! assertion
+                    
+                    if (error) {
+                        throw error; // Throw the actual storage error
+                    }
+                    if (!data?.signedUrl) {
+                         throw new Error("Received no signed URL from Supabase.");
+                    }
+                    setSignedUrl(data.signedUrl);
+                } catch (error: any) {
+                    // Catch errors from createSignedUrl
+                    console.error("(Restored Logic) Error creating signed URL:", error);
+                    setUrlError(error.message || "Failed to load image URL.");
+                    toast.error("Could not load image preview.");
+                } finally {
+                    setUrlLoading(false);
+                }
+            };
+            generateUrl(); // Call the correct function
+        }
+    }, [variation?.file_path, supabase]);
+
+    // Effect to cleanup preview URLs for the upload queue
+    useEffect(() => {
+        return () => uploadQueue.forEach(fileInfo => {
+            if (fileInfo.previewUrl) URL.revokeObjectURL(fileInfo.previewUrl);
+        });
+    }, []); 
+
+    // --- Add Mutation Hook for updating file path after upload ---
+    const updateVariationFilePathMutation = useMutation({
+        mutationFn: async (newFilePath: string) => {
+            if (!supabase) throw new Error("Supabase client not available");
+            if (!variationId) throw new Error("Variation ID is required");
+
+            const { data, error } = await supabase
+                .from('variations')
+                .update({ file_path: newFilePath })
+                .eq('id', variationId)
+                .select()
+                .single();
+
+            if (error) {
+                console.error('Error updating variation file path:', error);
+                throw new Error(`Failed to update variation file path: ${error.message}`);
+            }
+            return data;
+        },
+        onSuccess: (data) => {
+             // No need for a separate toast here, upload success toast is sufficient
+             console.log(`Variation ${data.variation_letter} file path updated to: ${data.file_path}`);
+             // Invalidate variation data to show the new file display
+             queryClient.invalidateQueries({ queryKey: ['variation', variationId] });
+        },
+        onError: (error) => {
+            // Toast handled in the calling function (xhr.onload)
+            console.error("Mutation error updating file path:", error);
+        },
+    });
+
+    // --- Function to Start Single File Upload (MODIFIED) ---
+    const startSingleFileUpload = useCallback(async (fileId: string) => {
+        // Get the CURRENT queue state from the ref
+        const currentQueue = uploadQueueRef.current;
+        const fileInfo = currentQueue.find(f => f.id === fileId);
+
+        // Check if file exists and is actually in 'uploading' state now
+        if (!fileInfo || fileInfo.status !== 'uploading') {
+            console.warn(`[startSingleFileUpload] Skipping ${fileId}. Reason: Not found in queue or status is not 'uploading'. Status: ${fileInfo?.status}`);
+            return; 
+        }
+
+        // Get the file object from the found info
+        const currentFileToUpload = fileInfo.file; 
+
+        console.log(`[startSingleFileUpload - Step 3] Proceeding with async upload logic for ${currentFileToUpload.name}`);
+        if (!supabase) {
+             console.error(`[startSingleFileUpload - Step 3] Supabase client is missing! Cannot upload ${(currentFileToUpload as File).name}`);
+             // Update state to show error
+             setUploadQueue(prevQueue => prevQueue.map(f => f.id === fileId ? { ...f, status: 'error', error: 'Supabase client unavailable' } : f));
+             return;
+        }
+
+        const filePath = `projects/${projectId}/designs/${designId}/versions/${versionId}/variations/${variationId}/${(currentFileToUpload as File).name}`;
+        const bucketName = 'design-variations';
+
+        try {
+            console.log(`[startSingleFileUpload - Step 4] Attempting to get signed URL for bucket '${bucketName}', path: ${filePath}`);
+            const { data: uploadUrlData, error: urlError } = await supabase.storage
+                .from(bucketName)
+                .createSignedUploadUrl(filePath, { upsert: true });
+
+            if (urlError) { 
+                console.error(`[startSingleFileUpload - Step 4] Error getting signed URL for ${(currentFileToUpload as File).name}:`, urlError);
+                console.error('[startSingleFileUpload - Step 4] Full Signed URL Error Object:', JSON.stringify(urlError, null, 2));
+                throw urlError;
+            }
+            if (!uploadUrlData?.signedUrl) { 
+                 console.error(`[startSingleFileUpload - Step 4] No signed URL returned for ${(currentFileToUpload as File).name}. Data received:`, uploadUrlData);
+                 throw new Error("Could not get signed upload URL. No URL present in response.");
+            }
+            console.log(`[startSingleFileUpload - Step 5] Successfully got signed URL for ${(currentFileToUpload as File).name}`);
+
+            const xhr = new XMLHttpRequest();
+            // Store XHR - Requires careful state update if we move this logic
+            setUploadQueue(prevQueue => prevQueue.map(f => f.id === fileId ? { ...f, xhr: xhr } : f)); 
+
+            console.log(`[startSingleFileUpload - Step 6] Opening XHR PUT for ${(currentFileToUpload as File).name}`);
+            xhr.open('PUT', uploadUrlData.signedUrl, true);
+            console.log(`[startSingleFileUpload - Step 7] Setting XHR headers for ${(currentFileToUpload as File).name}`);
+            xhr.setRequestHeader('Content-Type', (currentFileToUpload as File).type || 'application/octet-stream');
+
+            xhr.upload.onprogress = (event) => {
+                if (event.lengthComputable) {
+                    const percentage = Math.round((event.loaded * 100) / event.total);
+                    setUploadQueue(prevQueue =>
+                        prevQueue.map(f => f.id === fileId ? { ...f, progress: percentage } : f)
+                    );
+                }
+            };
+
+            xhr.onload = async () => {
+                 // Use functional update to get the latest state
+                 setUploadQueue(prevQueue => {
+                    const currentFileState = prevQueue.find(f => f.id === fileId);
+                    // Exit if cancelled or not found
+                    if (!currentFileState || currentFileState.status === 'cancelled') return prevQueue;
+                    const currentFile = currentFileState.file;
+
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        console.log(`${currentFile.name} uploaded successfully to storage. File path: ${filePath}`);
+                        toast.success(`${currentFile.name} uploaded successfully!`);
+                        
+                        // --- Update Variation file_path in DB ---
+                        updateVariationFilePathMutation.mutate(filePath, {
+                            onError: (error) => {
+                                // Handle DB update failure specifically
+                                console.error(`Failed to update database for ${currentFile.name}:`, error);
+                                toast.error(`Upload complete, but failed to update database record for ${currentFile.name}.`);
+                                // Keep status as success? Or revert? For now, keep success as file is in storage.
+                                // Consider adding a retry mechanism or manual update option later.
+                            }
+                        });
+                        // ------------------------------------------
+
+                        // Return updated state *immediately* for UI feedback
+                        return prevQueue.map(f => f.id === fileId ? { ...f, status: 'success', progress: 100, xhr: undefined } : f);
+                    } else {
+                        console.error(`Upload failed for ${currentFile.name}. Status: ${xhr.status}, Text: ${xhr.statusText}`);
+                        toast.error(`Upload failed for ${currentFile.name}.`);
+                        // Return updated state
+                        return prevQueue.map(f => f.id === fileId ? { ...f, status: 'error', error: `Upload failed: ${xhr.statusText || xhr.status}`, xhr: undefined } : f);
+                    }
+                 });
+                 // Removed await here as the state update needs to happen synchronously for UI
+                 // and the mutation handles its own async logic.
+            };
+
+            xhr.onerror = () => {
+                setUploadQueue(prevQueue => {
+                    const currentFileState = prevQueue.find(f => f.id === fileId);
+                    // Exit if cancelled or not found
+                    if (!currentFileState || currentFileState.status === 'cancelled') return prevQueue; 
+                    // Re-get the file object for type safety inside callback
+                    const currentFile = currentFileState.file;
+
+                    toast.error(`Network error during upload for ${currentFile.name}.`);
+                    return prevQueue.map(f => f.id === fileId ? { ...f, status: 'error', error: 'Network error', xhr: undefined } : f);
+                });
+            };
+
+            xhr.onabort = () => {
+                 console.log(`Upload aborted for file ID: ${fileId}`); 
+                 setUploadQueue(prevQueue => prevQueue.map(f => f.id === fileId ? { ...f, status: 'cancelled', progress: 0, xhr: undefined } : f));
+            };
+
+            console.log(`[startSingleFileUpload - Step 8] Sending XHR for ${(currentFileToUpload as File).name}`);
+            xhr.send(currentFileToUpload);
+            console.log(`[startSingleFileUpload - Step 9] XHR send() method called successfully for ${(currentFileToUpload as File).name}`);
+
+        } catch (error: any) {
+             console.error(`[startSingleFileUpload - Step CATCH] CRITICAL FAILURE during upload setup for: ${(currentFileToUpload as File)?.name || fileId}`);
+             console.error("[startSingleFileUpload - Step CATCH] Error Details:", error);
+             const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+             toast.error(`Could not start upload for ${(currentFileToUpload as File)?.name || 'file'}. Error: ${errorMessage}`);
+             setUploadQueue(prevQueue => prevQueue.map(f => f.id === fileId ? { ...f, status: 'error', error: `Setup failed: ${errorMessage}`, xhr: undefined } : f));
+        }
+
+    }, [supabase, variationId, projectId, designId, versionId, queryClient, updateVariationFilePathMutation]);
+
+    // --- Upload Management Effect (MODIFIED - Step 2) --- 
+    useEffect(() => {
+        if (!supabase) return; 
+        
+        const uploadingCount = uploadQueue.filter(f => f.status === 'uploading').length;
+        const pendingFiles = uploadQueue.filter(f => f.status === 'pending');
+        const slotsAvailable = MAX_CONCURRENT_UPLOADS - uploadingCount;
+
+        if (slotsAvailable > 0 && pendingFiles.length > 0) {
+            const filesToMarkUploading = pendingFiles.slice(0, slotsAvailable);
+            const filesToMarkIds = filesToMarkUploading.map(f => f.id);
+            
+            // Update state to mark selected pending files as 'uploading'
+            setUploadQueue(currentQueue => 
+                currentQueue.map(fileInfo => 
+                    filesToMarkIds.includes(fileInfo.id)
+                        ? { ...fileInfo, status: 'uploading' } 
+                        : fileInfo
+                )
+            );
+            
+            // // Original logic removed - we no longer call startSingleFileUpload directly here
+            // filesToStart.forEach(fileInfo => {
+            //     startSingleFileUpload(fileInfo.id);
+            // });
+        }
+    // Remove startSingleFileUpload from dependencies as it's no longer called here
+    }, [uploadQueue, supabase]); 
+
+    // --- New Effect for executing uploads (ADDED - Step 3) --- 
+    useEffect(() => {
+        // Find files that are marked as 'uploading' but haven't started the XHR process yet
+        const filesToActuallyStart = uploadQueue.filter(
+            (fileInfo) => fileInfo.status === 'uploading' && fileInfo.xhr === undefined
+        );
+
+        if (filesToActuallyStart.length > 0) {
+             console.log(`[Upload Trigger Effect] Found ${filesToActuallyStart.length} file(s) marked for upload. Starting them...`);
+             filesToActuallyStart.forEach((fileInfo) => {
+                // Now call the async function to handle the actual upload
+                startSingleFileUpload(fileInfo.id);
+            });
+        }
+    // This effect depends on the queue content and the function to start the upload
+    }, [uploadQueue, startSingleFileUpload]);
+
+    // --- Cancel Upload Function ---
+     const cancelUpload = useCallback((fileId: string) => {
+        setUploadQueue(prevQueue => {
+            const fileToCancel = prevQueue.find(f => f.id === fileId);
+            if (fileToCancel?.xhr && fileToCancel.status === 'uploading') {
+                 console.log(`Attempting to cancel upload for: ${fileToCancel.file.name}`);
+                 fileToCancel.xhr.abort(); 
+                 toast.info(`Upload for ${fileToCancel.file.name} cancelled.`);
+                 // State update is handled by onabort, but set status optimistically
+                 return prevQueue.map(f => f.id === fileId ? { ...f, status: 'cancelled', progress: 0 } : f); 
+            }
+            return prevQueue; 
+        });
+    }, []);
 
     // --- Handlers ---
     const handleVariationEditSubmit = (values: VariationEditFormData) => {
@@ -216,6 +519,52 @@ export default function VariationDetailPage() {
 
     const handleCancelEditMode = () => {
         setIsEditingVariation(false);
+    };
+
+    // Dropzone Handlers
+    const onFilesAccepted = useCallback((acceptedFiles: File[]) => {
+        console.log('Batch Accepted files:', acceptedFiles);
+        const newUploads: UploadingFileInfo[] = acceptedFiles.map(file => ({
+            id: `${file.name}-${file.lastModified}-${Math.random()}`,
+            file: file,
+            previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : '',
+            status: 'pending',
+            progress: 0,
+        }));
+        setUploadQueue(prevQueue => [...prevQueue, ...newUploads]);
+    }, []); 
+
+    const onFilesRejected = useCallback((fileRejections: any[]) => {
+        console.log('Rejected files:', fileRejections);
+        fileRejections.forEach(rejection => {
+            const firstError = rejection.errors[0];
+            let message = 'Invalid file';
+             if (firstError) {
+                if (firstError.code === 'file-too-large') {
+                    message = `File is too large. Max size is 10MB.`;
+                } else if (firstError.code === 'file-invalid-type') {
+                    message = `Invalid file type.`;
+                } else {
+                    message = firstError.message;
+                }
+            }
+            toast.error(`File rejected: ${rejection.file.name} - ${message}`);
+        });
+    }, []);
+    
+    // --- Mutations ---
+    const updateVariationMutation = useUpdateVariation(variationId); // Keep this for edits
+
+    // File type definitions for Dropzone
+    const acceptedFileTypes = {
+        'image/jpeg': ['.jpg', '.jpeg'],
+        'image/png': ['.png'],
+        'image/gif': ['.gif'],
+        'image/webp': ['.webp'],
+        'image/svg+xml': ['.svg'],
+        'application/postscript': ['.ai'], // MIME type for Adobe Illustrator
+        'application/photoshop': ['.psd'], // Common (though not official) MIME type
+        'image/vnd.adobe.photoshop': ['.psd'] // Another possible PSD MIME type
     };
 
     // --- Loading & Error States ---
@@ -249,9 +598,113 @@ export default function VariationDetailPage() {
         <div className="container mx-auto p-4 space-y-6">
             <Breadcrumbs items={breadcrumbItems} />
 
-            {/* Placeholder for Variation Image/Content Display */}
-            <Card className="aspect-video flex items-center justify-center bg-muted/30">
-                 <p className="text-muted-foreground italic">Variation Image/Content Area</p>
+            {/* --- File Display Area (Always show if path exists) --- */}
+            {variation.file_path && (
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Uploaded File</CardTitle>
+                         {/* TODO: Add replace/delete file functionality */}
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                        {/* Display Filename */}
+                        <p>
+                            Filename:
+                            <span className="font-medium ml-2">{getFilenameFromPath(variation.file_path)}</span>
+                        </p>
+
+                        {/* Display Image Preview using Signed URL */}
+                        {urlLoading && (
+                            <div className="flex items-center text-sm text-muted-foreground">
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading image preview...
+                            </div>
+                        )}
+                        {urlError && (
+                            <p className="text-sm text-red-600">Error loading image: {urlError}</p>
+                        )}
+                        {signedUrl && !urlLoading && !urlError && (
+                            <div className="mt-4 border rounded-md p-2 max-w-md mx-auto">
+                                <img 
+                                    src={signedUrl} 
+                                    alt={`Preview for ${getFilenameFromPath(variation.file_path)}`} 
+                                    className="max-w-full h-auto object-contain rounded-md"
+                                />
+                            </div>
+                        )}
+                        {/* TODO: Consider adding a download button using the signedUrl */}
+                    </CardContent>
+                </Card>
+            )}
+
+            {/* --- Upload Area (Now handles queue) --- */}
+            <Card>
+                <CardHeader>
+                    <CardTitle>Upload New Design Files</CardTitle>
+                    <CardDescription>Upload design file(s) for this variation. (Max 10MB each)</CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <Dropzone
+                        onFilesAccepted={onFilesAccepted} 
+                        onFilesRejected={onFilesRejected} 
+                        accept={acceptedFileTypes}      
+                        maxSize={10 * 1024 * 1024}      
+                        multiple={true} // Allow multiple
+                        className="mb-4"
+                        disabled={uploadQueue.filter(f => f.status === 'uploading' || f.status === 'pending').length >= 5} // Limit queue size
+                    />
+                    
+                    {/* Display Upload Queue & Progress */}
+                    {uploadQueue.length > 0 && (
+                        <div className="mt-4 space-y-3">
+                            <h4 className="text-sm font-medium mb-2">Upload Queue:</h4>
+                            {uploadQueue.map((fileInfo) => (
+                                <div key={fileInfo.id} className="text-sm border p-3 rounded-md space-y-2">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-2 overflow-hidden">
+                                            {fileInfo.previewUrl ? (
+                                                <img 
+                                                    src={fileInfo.previewUrl} 
+                                                    alt={`Preview of ${fileInfo.file.name}`} 
+                                                    className="h-10 w-10 object-contain border rounded-sm flex-shrink-0" 
+                                                />
+                                            ) : (
+                                                <div className="h-10 w-10 flex items-center justify-center border rounded-sm bg-muted text-muted-foreground text-xs flex-shrink-0">
+                                                    No Preview
+                                                </div>
+                                            )}
+                                            <span className="truncate" title={fileInfo.file.name}>
+                                                {fileInfo.file.name} ({(fileInfo.file.size / 1024).toFixed(2)} KB)
+                                            </span>
+                                        </div>
+                                        {/* Cancel Button */} 
+                                        {(fileInfo.status === 'uploading' || fileInfo.status === 'pending') && (
+                                            <Button 
+                                                size="icon" 
+                                                variant="ghost" 
+                                                onClick={() => cancelUpload(fileInfo.id)} 
+                                                title={fileInfo.status === 'uploading' ? "Cancel Upload" : "Remove from Queue"} // Adjust title/action
+                                                className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                                            >
+                                                <X className="h-4 w-4"/>
+                                            </Button>
+                                        )}
+                                     </div>
+                                     {/* Status Text */} 
+                                     <p className={`text-xs ${fileInfo.status === 'error' ? 'text-red-600' : 'text-muted-foreground'}`}>
+                                        Status: {fileInfo.status} {fileInfo.status === 'uploading' ? `(${fileInfo.progress}%)` : ''}
+                                     </p>
+                                     {/* Progress Bar */} 
+                                     {fileInfo.status === 'uploading' && (
+                                         <Progress value={fileInfo.progress} className="h-1" />
+                                     )}
+                                     {/* Error Message */} 
+                                     {fileInfo.status === 'error' && (
+                                         <p className="text-xs text-red-600">Error: {fileInfo.error}</p>
+                                     )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </CardContent>
             </Card>
             
             {/* --- Variation Details & Feedback Card --- */}
@@ -315,9 +768,9 @@ export default function VariationDetailPage() {
                                     Cancel
                                 </Button>
                                 <Button type="submit" disabled={isSubmittingVariationEdit || updateVariationMutation.isPending}>
-                                    {isSubmittingVariationEdit || updateVariationMutation.isPending ? (
+                                    {(isSubmittingVariationEdit || updateVariationMutation.isPending) && (
                                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    ) : null}
+                                    )}
                                     Save Changes
                                 </Button>
                             </div>
