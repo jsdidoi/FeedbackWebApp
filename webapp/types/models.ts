@@ -171,4 +171,5 @@ export type DesignGridItem = Pick<
 > & {
     latest_version_stage: DesignStage | null;
     latest_thumbnail_path: string | null;
+    latest_priority_variation_status: VariationFeedbackStatus | null;
 }; 

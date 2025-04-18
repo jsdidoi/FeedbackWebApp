@@ -141,6 +141,10 @@ const fetchDesigns = async (supabase: any, projectId: string): Promise<DesignGri
         p_project_id: projectId // Correct named parameter
     });
 
+    // --- DEBUG LOGGING --- 
+    console.log('[fetchDesigns] Raw data from RPC:', data); 
+    // --- END DEBUG LOGGING ---
+
     if (error) {
         console.error('RAW Supabase fetchDesigns RPC ERROR object:', JSON.stringify(error, null, 2)); 
         console.error('Error fetching designs via RPC:', error); 
@@ -425,7 +429,7 @@ const useAddComment = (designId: string, variationId: string) => {
 };
 
 // --- NEW: Hook to Update VERSION Details (Stage/Status) ---
-const useUpdateVersionDetails = (versionId: string, designId: string) => { // Need designId for invalidation
+const useUpdateVersionDetails = (versionId: string, designId: string, projectId: string | null) => { // Added projectId
     const { supabase } = useAuth();
     const queryClient = useQueryClient();
 
@@ -457,14 +461,14 @@ const useUpdateVersionDetails = (versionId: string, designId: string) => { // Ne
             return data;
         },
         onSuccess: (data) => {
+            console.log('[UpdateVersionSuccess] Data:', data); // <-- Keep logging for now
             toast.success(`Version ${data.version_number} updated successfully!`);
             // Invalidate design details to refetch version data
             queryClient.invalidateQueries({ queryKey: ['designDetails', designId] }); 
-            // We might also need to invalidate the grid if its display depends on latest version status
-            // Assuming the RPC handles fetching the latest stage/status correctly, invalidating 
-            // the project's designs list might be needed IF the definition of "latest" changes due to status.
-            // For now, let's rely on designDetails invalidation.
-            queryClient.invalidateQueries({ queryKey: ['designs', data.project_id] }); 
+            // Use the passed projectId for designs invalidation
+            if (projectId) {
+                queryClient.invalidateQueries({ queryKey: ['designs', projectId] }); 
+            }
         },
         onError: (error) => {
             toast.error(error.message);
@@ -473,7 +477,7 @@ const useUpdateVersionDetails = (versionId: string, designId: string) => { // Ne
 };
 
 // --- NEW: Hook to Update VARIATION Details (Status) ---
-const useUpdateVariationDetails = (variationId: string, designId: string) => { // Need designId for invalidation
+const useUpdateVariationDetails = (variationId: string, designId: string, projectId: string | null) => { // Added projectId
     const { supabase } = useAuth();
     const queryClient = useQueryClient();
 
@@ -504,11 +508,10 @@ const useUpdateVariationDetails = (variationId: string, designId: string) => { /
             toast.success(`Variation ${data.variation_letter} status updated to ${data.status}!`);
             // Invalidate design details to refetch variation data within the modal
             queryClient.invalidateQueries({ queryKey: ['designDetails', designId] }); 
-            // Potentially invalidate the main grid too, if its display depends on variation status
-            queryClient.invalidateQueries({ queryKey: ['designs', data.project_id] }); // Assuming variation has project_id? NO - need design's project_id
-            // To invalidate designs, we need the projectId. We only have designId here.
-            // Simplest is to rely on designDetails invalidation for the modal refresh.
-            // If grid needs update, we might need to pass projectId to this hook or handle invalidation differently.
+            // ALSO invalidate the designs grid query for the current project
+            if (projectId) {
+                queryClient.invalidateQueries({ queryKey: ['designs', projectId] }); 
+            }
         },
         onError: (error) => {
             toast.error(error.message);
@@ -1138,7 +1141,11 @@ export default function ProjectsOverviewPage() {
     const updateProjectDetailsMutation = useUpdateProjectDetails(selectedProjectId || '');
     const addCommentMutation = useAddComment(selectedDesignIdForModal || '', currentVariationId || '');
     // NEW: Instantiate version update hook
-    const updateVersionDetailsMutation = useUpdateVersionDetails(currentVersionId || '', selectedDesignIdForModal || ''); 
+    const updateVersionDetailsMutation = useUpdateVersionDetails(
+        currentVersionId || '', 
+        selectedDesignIdForModal || '', 
+        selectedProjectId || null // Pass projectId
+    ); 
     // NEW: Instantiate version with variations hook (moved inside component)
     const addVersionWithVariationsMutation = useAddVersionWithVariations(
         selectedDesignIdForModal || '', 
@@ -1168,7 +1175,8 @@ export default function ProjectsOverviewPage() {
     // NEW: Instantiate variation update hook
     const updateVariationDetailsMutation = useUpdateVariationDetails(
         currentVariationId || '', 
-        selectedDesignIdForModal || ''
+        selectedDesignIdForModal || '',
+        selectedProjectId || null // Pass the currently selected projectId
     );
 
     // --- Handlers ---
@@ -1444,9 +1452,12 @@ export default function ProjectsOverviewPage() {
                 </CardContent>
             </Card>
 
-                        <div className="flex justify-between items-center mb-4">
-                             <h2 className="text-2xl font-semibold">Designs</h2>
-                             <Dialog> 
+                        
+                        
+                        {/* Design Grid Area - Keep this heading as it's next to the button */}
+                        <div className="flex justify-between items-center mb-4 mt-6">
+                            <h2 className="text-2xl font-semibold">Designs</h2>
+                            <Dialog>
                         <DialogTrigger asChild>
                             <Button size="sm">
                                         <PlusCircle className="mr-2 h-4 w-4" /> Add Design Manually
@@ -1472,14 +1483,6 @@ export default function ProjectsOverviewPage() {
                             </form>
                         </DialogContent>
                     </Dialog>
-                        </div>
-                        
-                        {/* Design Grid Area */}
-                        <div className="flex justify-between items-center mb-4 mt-6"> {/* Added margin-top */} 
-                             <h2 className="text-2xl font-semibold">Designs</h2>
-                             <Dialog> 
-                                 {/* ... dialog trigger and content ... */}
-                             </Dialog>
                         </div>
                         
                         {/* Replace Table with Design Card Grid */}

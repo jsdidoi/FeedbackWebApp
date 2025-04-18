@@ -4,9 +4,10 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ImageIcon, Loader2 } from 'lucide-react';
-import { DesignGridItem, DesignStage } from '@/types/models';
+import { DesignGridItem, DesignStage, VariationFeedbackStatus } from '@/types/models';
 import { useAuth } from '@/providers/AuthProvider';
 import Image from 'next/image';
+import { cn } from '@/lib/utils';
 
 interface DesignCardProps {
   design: DesignGridItem;
@@ -49,12 +50,28 @@ export const DesignCard = ({ design, onClick }: DesignCardProps) => {
     }
   }, [supabase, design.latest_thumbnail_path]);
 
+  // Determine color/variant for the priority status badge
+  const getStatusBadgeClass = (status: VariationFeedbackStatus | null) => {
+    switch (status) {
+      case VariationFeedbackStatus.NeedsChanges:
+        return "bg-orange-100 text-orange-800 border-orange-200"; // Orange
+      case VariationFeedbackStatus.PendingFeedback:
+        return "bg-gray-100 text-gray-800 border-gray-200"; // Gray
+      case VariationFeedbackStatus.Approved:
+        return "bg-green-100 text-green-800 border-green-200"; // Green
+      case VariationFeedbackStatus.Rejected:
+        return "bg-red-100 text-red-800 border-red-200"; // Red
+      default:
+        return "bg-muted text-muted-foreground border-transparent"; // Default/Null
+    }
+  };
+
   return (
     <Card
-      className="cursor-pointer hover:shadow-lg transition-shadow duration-200 overflow-hidden group"
+      className="p-0 gap-0 cursor-pointer hover:shadow-lg transition-shadow duration-200 overflow-hidden group"
       onClick={onClick}
     >
-      <CardContent className="p-0 aspect-square flex items-center justify-center bg-muted relative overflow-hidden">
+      <CardContent className="p-0 aspect-square bg-muted relative overflow-hidden mb-0">
         {isLoadingUrl ? (
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         ) : imageUrl ? (
@@ -64,24 +81,37 @@ export const DesignCard = ({ design, onClick }: DesignCardProps) => {
             fill
             sizes="(max-width: 640px) 100vw, (max-width: 768px) 50vw, (max-width: 1024px) 33vw, 25vw"
             style={{ objectFit: 'cover' }}
-            className="transition-transform duration-300 group-hover:scale-105"
-            unoptimized
+            className="absolute w-full h-full transition-transform duration-300 group-hover:scale-105"
             onError={(e) => {
               console.error(`[DesignCard] Failed to load image: ${imageUrl}`, e);
               setImageUrl(null);
             }}
           />
         ) : (
-          <ImageIcon className="h-12 w-12 text-muted-foreground" />
+          <div className="flex items-center justify-center h-full w-full">
+            <ImageIcon className="h-12 w-12 text-muted-foreground" />
+          </div>
         )}
       </CardContent>
-      <CardFooter className="p-3 flex justify-between items-center bg-background border-t">
-        <span className="font-medium text-sm truncate" title={design.name}>{design.name}</span>
-        <div className="flex items-center gap-1.5 shrink-0">
+      {/* Footer with vertical stacking */}
+      <CardFooter className="p-3 flex flex-col items-start bg-background border-t mt-0 mb-0">
+        <span className="font-medium text-sm truncate w-full" title={design.name}>{design.name}</span>
+        {/* Container for badges below name */}
+        <div className="flex items-center gap-1.5 mt-1">
+          {/* Priority Variation Status Badge */}
+          {design.latest_priority_variation_status && (
+            <Badge 
+              className={cn("text-xs border", getStatusBadgeClass(design.latest_priority_variation_status))}
+              title={`Feedback: ${design.latest_priority_variation_status}`}
+            >
+              {design.latest_priority_variation_status} 
+            </Badge>
+          )}
+          {/* Latest Version Stage Badge */}
           <Badge variant="secondary" className="text-xs capitalize">{design.latest_version_stage || 'N/A'}</Badge>
-          <Badge variant="outline" className="text-xs">{design.status}</Badge>
+          {/* REMOVED design.status badge */}
         </div>
       </CardFooter>
     </Card>
   );
-}; 
+};
