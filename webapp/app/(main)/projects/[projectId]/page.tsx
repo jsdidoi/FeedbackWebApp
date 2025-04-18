@@ -64,7 +64,7 @@ import {
 
 // For Upload Queue
 interface UploadingFileInfo {
-  id: string;
+    id: string;
   file: File;
   previewUrl: string;
   status: 'pending' | 'uploading' | 'success' | 'error' | 'cancelled';
@@ -79,7 +79,7 @@ type NewDesignForm = {
     name: string;
 };
 
-// --- Zod Schema for New Design Form --- 
+// --- Zod Schema for New Design Form ---
 const designSchema = z.object({
   name: z.string().min(1, 'Design name is required'),
 });
@@ -161,7 +161,7 @@ const fetchDesignDetails = async (supabase: any, designId: string): Promise<Desi
             )
         `)
         .eq('id', designId)
-        .order('version_number', { referencedTable: 'versions', ascending: false }) // Order versions desc
+        .order('version_number', { referencedTable: 'versions', ascending: true }) // Order versions ASC (V1, V2...)
         .order('variation_letter', { referencedTable: 'versions.variations', ascending: true }) // Order variations asc
         .single();
 
@@ -480,6 +480,279 @@ const useUpdateProjectDetails = (projectId: string) => {
     });
 };
 
+// --- NEW: Hook to Add Version with Variations --- 
+const useAddVersionWithVariations = (
+    designId: string,
+    projectId: string,
+    setCurrentVersionId: React.Dispatch<React.SetStateAction<string | null>>,
+    setCurrentVariationId: React.Dispatch<React.SetStateAction<string | null>>
+) => {
+    const { supabase } = useAuth();
+    const queryClient = useQueryClient();
+
+    // Helper type for the mutation function argument
+    type AddVersionPayload = {
+        files: File[];
+    };
+
+    return useMutation({
+        mutationFn: async ({ files }: AddVersionPayload) => {
+            if (!supabase) throw new Error("Supabase client not available");
+            if (!designId) throw new Error("Design ID is required");
+            if (!projectId) throw new Error("Project ID is required");
+            if (!files || files.length === 0) throw new Error("No files provided");
+
+            console.log(`[AddVersion] Starting process for ${files.length} files on design ${designId}`);
+
+            // --- 1. Determine New Version Number --- 
+            const { data: existingVersions, error: fetchError } = await supabase
+                .from('versions')
+                .select('version_number')
+                .eq('design_id', designId)
+                .order('version_number', { ascending: false })
+                .limit(1);
+
+            if (fetchError) {
+                console.error("[AddVersion] Error fetching existing versions:", fetchError);
+                throw new Error(`Failed to determine next version number: ${fetchError.message}`);
+            }
+
+            const latestVersionNumber = existingVersions?.[0]?.version_number ?? 0;
+            const newVersionNumber = latestVersionNumber + 1;
+            console.log(`[AddVersion] Determined new version number: ${newVersionNumber}`);
+
+            // --- 2. Create New Version Record --- 
+            // Define initial status/stage for new versions (adjust as needed)
+            const initialVersionStatus: VersionRoundStatus = VersionRoundStatus.WorkInProgress;
+            const initialVersionStage: DesignStage = DesignStage.Sketch;
+            
+            const { data: newVersion, error: versionError } = await supabase
+                .from('versions')
+                .insert({ 
+                    design_id: designId, 
+                    version_number: newVersionNumber, 
+                    status: initialVersionStatus,
+                    stage: initialVersionStage 
+                })
+                .select()
+                .single();
+
+            if (versionError) {
+                console.error("[AddVersion] Error creating new version record:", versionError);
+                throw new Error(`Failed to create version ${newVersionNumber}: ${versionError.message}`);
+            }
+            if (!newVersion) throw new Error('Failed to create version, no data returned.');
+            const newVersionId = newVersion.id;
+            console.log(`[AddVersion] Created new version record: ${newVersionId} (V${newVersionNumber})`);
+
+            // --- 3. Process Each File: Create Variation, Upload, Update --- 
+            const variationResults = [];
+            const bucketName = 'design-variations';
+            const initialVariationStatus = 'Pending Feedback'; // Or derive from version status/stage?
+
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const variationLetter = String.fromCharCode(65 + i); // A, B, C...
+                let createdVariationId = '';
+                let finalFilePath = '';
+
+                try {
+                    // 3a. Create Variation Record
+                    const { data: newVariation, error: variationError } = await supabase
+                        .from('variations')
+                        .insert({ 
+                            version_id: newVersionId, 
+                            variation_letter: variationLetter, 
+                            status: initialVariationStatus
+                            // file_path initially null
+                        })
+                        .select()
+                        .single();
+
+                    if (variationError) throw new Error(`Variation ${variationLetter} creation failed: ${variationError.message}`);
+                    if (!newVariation) throw new Error(`Variation ${variationLetter} creation failed, no data returned.`);
+                    createdVariationId = newVariation.id;
+                    console.log(`[AddVersion] Created variation record: ${createdVariationId} (${variationLetter}) for V${newVersionNumber}`);
+
+                    // 3b. Upload File
+                    // Path: projects/{projectId}/designs/{designId}/versions/{newVersionId}/variations/{variationId}/{fileName}
+                    finalFilePath = `projects/${projectId}/designs/${designId}/versions/${newVersionId}/variations/${createdVariationId}/${file.name}`;
+                    console.log(`[AddVersion] Attempting upload to: ${finalFilePath}`);
+                    
+                    const { error: uploadError } = await supabase.storage
+                        .from(bucketName)
+                        .upload(finalFilePath, file, { upsert: true }); // Use upsert: true if replacing is acceptable on retry?
+
+                    if (uploadError) throw new Error(`Storage upload failed for ${file.name}: ${uploadError.message}`);
+                    console.log(`[AddVersion] Successfully uploaded ${file.name} to ${finalFilePath}`);
+
+                    // 3c. Update Variation with File Path
+                    const { error: updateError } = await supabase
+                        .from('variations')
+                        .update({ file_path: finalFilePath })
+                        .eq('id', createdVariationId);
+
+                    if (updateError) {
+                         // Log warning but don't necessarily fail the whole batch?
+                         console.warn(`[AddVersion] Failed to link ${finalFilePath} to variation ${createdVariationId}:`, updateError);
+                         toast.warning(`File ${file.name} uploaded, but failed to link to variation record.`);
+                    } else {
+                        console.log(`[AddVersion] Successfully linked ${finalFilePath} to variation ${createdVariationId}`);
+                    }
+                    
+                    variationResults.push({ variationId: createdVariationId, filePath: finalFilePath, fileName: file.name });
+                    
+                } catch (fileError: any) {
+                    console.error(`[AddVersion] FAILED processing file ${i} (${file.name}):`, fileError);
+                    // Rollback/cleanup attempts? Complex. For now, just report error.
+                    // Maybe collect errors and report them all at the end?
+                    // If one file fails, should the whole version creation fail? Let's say yes for now.
+                    throw new Error(`Failed to process file ${file.name}: ${fileError.message}`); 
+                    // Consider more granular error reporting / partial success later
+                }
+            }
+            
+            console.log(`[AddVersion] Successfully processed ${variationResults.length} files for V${newVersionNumber}.`);
+            // Return info about the newly created version and its variations
+            return { newVersion, variations: variationResults }; 
+
+        },
+        onSuccess: (data) => {
+            // data = { newVersion, variations: [...] }
+            toast.success(`Version ${data.newVersion.version_number} with ${data.variations.length} variation(s) added successfully!`);
+            // Invalidate design details to refresh the modal
+            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] }); 
+            // Optionally, invalidate the main design grid if its display depends on the *existence* of new versions
+            queryClient.invalidateQueries({ queryKey: ['designs', projectId] }); 
+            // Update state with the new version ID and first variation ID
+            setCurrentVersionId(data.newVersion.id);
+            if (data.variations && data.variations.length > 0) {
+                 setCurrentVariationId(data.variations[0].variationId); // Correct property name
+            } else {
+                setCurrentVariationId(null); // Handle case with no variations (though unlikely here)
+            }
+        },
+        onError: (error) => {
+            toast.error(`Failed to add new version: ${error.message}`);
+            // Consider specific cleanup or error state updates here
+        },
+    });
+};
+
+// --- NEW: Hook to Add Variations to an Existing Version ---
+const useAddVariationsToVersion = (
+    versionId: string, 
+    designId: string, // Needed for invalidation and path construction
+    projectId: string // Needed for path construction
+) => {
+    const { supabase } = useAuth();
+    const queryClient = useQueryClient();
+
+    type AddVariationsPayload = {
+        files: File[];
+    };
+
+    return useMutation({
+        mutationFn: async ({ files }: AddVariationsPayload) => {
+            if (!supabase) throw new Error("Supabase client not available");
+            if (!versionId) throw new Error("Cannot add variations: No version selected.");
+            if (!designId) throw new Error("Cannot add variations: Design ID missing.");
+            if (!projectId) throw new Error("Cannot add variations: Project ID missing.");
+            if (!files || files.length === 0) throw new Error("No files provided");
+
+            console.log(`[AddVar] Starting process for ${files.length} files on version ${versionId}`);
+
+            // --- 1. Determine Starting Variation Letter --- 
+            const { data: existingVariations, error: fetchError } = await supabase
+                .from('variations')
+                .select('id') // Just need count or presence
+                .eq('version_id', versionId);
+            
+            if (fetchError) {
+                 console.error("[AddVar] Error fetching existing variations count:", fetchError);
+                 throw new Error(`Failed to determine next variation letter: ${fetchError.message}`);
+            }
+
+            const existingVariationsCount = existingVariations?.length ?? 0;
+            console.log(`[AddVar] Found ${existingVariationsCount} existing variations for version ${versionId}.`);
+
+            // --- 2. Process Each File: Create Variation, Upload, Update --- 
+            const results = [];
+            const bucketName = 'design-variations';
+            const initialVariationStatus = 'Pending Feedback'; // Consistent initial status
+
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                // Calculate letter based on existing count + current index
+                const variationLetter = String.fromCharCode(65 + existingVariationsCount + i); 
+                let createdVariationId = '';
+                let finalFilePath = '';
+
+                try {
+                    // 2a. Create Variation Record
+                    const { data: newVariation, error: variationError } = await supabase
+                        .from('variations')
+                        .insert({ 
+                            version_id: versionId, 
+                            variation_letter: variationLetter, 
+                            status: initialVariationStatus
+                        })
+                        .select()
+                        .single();
+
+                    if (variationError) throw new Error(`Variation ${variationLetter} creation failed: ${variationError.message}`);
+                    if (!newVariation) throw new Error(`Variation ${variationLetter} creation failed, no data returned.`);
+                    createdVariationId = newVariation.id;
+                    console.log(`[AddVar] Created variation record: ${createdVariationId} (${variationLetter}) for version ${versionId}`);
+
+                    // 2b. Upload File
+                    finalFilePath = `projects/${projectId}/designs/${designId}/versions/${versionId}/variations/${createdVariationId}/${file.name}`;
+                    console.log(`[AddVar] Attempting upload to: ${finalFilePath}`);
+                    
+                    const { error: uploadError } = await supabase.storage
+                        .from(bucketName)
+                        .upload(finalFilePath, file, { upsert: true });
+
+                    if (uploadError) throw new Error(`Storage upload failed for ${file.name}: ${uploadError.message}`);
+                    console.log(`[AddVar] Successfully uploaded ${file.name} to ${finalFilePath}`);
+
+                    // 2c. Update Variation with File Path
+                    const { error: updateError } = await supabase
+                        .from('variations')
+                        .update({ file_path: finalFilePath })
+                        .eq('id', createdVariationId);
+
+                    if (updateError) {
+                         console.warn(`[AddVar] Failed to link ${finalFilePath} to variation ${createdVariationId}:`, updateError);
+                         toast.warning(`File ${file.name} uploaded, but failed to link to variation record.`);
+                    } else {
+                        console.log(`[AddVar] Successfully linked ${finalFilePath} to variation ${createdVariationId}`);
+                    }
+                    
+                    results.push({ variationId: createdVariationId, filePath: finalFilePath, fileName: file.name });
+                    
+                } catch (fileError: any) {
+                    console.error(`[AddVar] FAILED processing file ${i} (${file.name}):`, fileError);
+                    throw new Error(`Failed to process file ${file.name}: ${fileError.message}`); 
+                }
+            }
+            
+            console.log(`[AddVar] Successfully processed ${results.length} files for version ${versionId}.`);
+            return { addedVariations: results }; 
+
+        },
+        onSuccess: (data, variables) => {
+            // data = { addedVariations: [...] }; variables = { files: [...] }
+            toast.success(`${data.addedVariations.length} new variation(s) added successfully!`);
+            // Invalidate design details to refresh the modal and show new variations
+            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] }); 
+        },
+        onError: (error) => {
+            toast.error(`Failed to add new variations: ${error.message}`);
+        },
+    });
+};
+
 export default function ProjectsOverviewPage() {
     const { supabase } = useAuth();
     const params = useParams();
@@ -503,6 +776,10 @@ export default function ProjectsOverviewPage() {
     const [isEditingVersionDetails, setIsEditingVersionDetails] = useState(false);
     const [editingVersionStage, setEditingVersionStage] = useState<DesignStage | null>(null);
     const [editingVersionStatus, setEditingVersionStatus] = useState<VersionRoundStatus | null>(null);
+
+    // --- Refs for hidden file inputs ---
+    const addVersionFileInputRef = useRef<HTMLInputElement>(null);
+    const addVariationFileInputRef = useRef<HTMLInputElement>(null);
 
     // --- Form Hook for Add Design Dialog (Moved to Top Level) ---
     const {
@@ -559,22 +836,40 @@ export default function ProjectsOverviewPage() {
     // Effect to set initial/default version/variation when modal data loads
     useEffect(() => {
         if (designDetailsData?.versions && designDetailsData.versions.length > 0) {
-            const latestVersion = designDetailsData.versions[0]; // Already ordered desc
-            if (currentVersionId !== latestVersion.id) { // Only set if different or null
-                setCurrentVersionId(latestVersion.id);
-                // When version changes (or loads initially), default variation
-                if (latestVersion.variations && latestVersion.variations.length > 0) {
-                    setCurrentVariationId(latestVersion.variations[0].id); // Already ordered asc
+            // Check if the currently selected version is still valid in the new data
+            const currentVersionExists = currentVersionId && designDetailsData.versions.some(v => v.id === currentVersionId);
+
+            // Only set default if no version is selected OR the selected one is no longer valid
+            if (!currentVersionExists) {
+                const targetVersion = designDetailsData.versions[0]; // Default to first version (which will be V1 after order change)
+                setCurrentVersionId(targetVersion.id);
+                // When version changes, default variation
+                if (targetVersion.variations && targetVersion.variations.length > 0) {
+                    setCurrentVariationId(targetVersion.variations[0].id); // Default to first variation (A)
                 } else {
                     setCurrentVariationId(null);
                 }
+            } else {
+                // If current version IS still valid, ensure current variation is also valid within that version
+                const currentVersionData = designDetailsData.versions.find(v => v.id === currentVersionId);
+                const currentVariationExists = currentVariationId && currentVersionData?.variations.some(va => va.id === currentVariationId);
+                if (!currentVariationExists && currentVersionData?.variations && currentVersionData.variations.length > 0) {
+                    // If current variation is invalid, set to first variation of current version
+                     setCurrentVariationId(currentVersionData.variations[0].id);
+                } else if (!currentVariationExists) {
+                    // If current variation is invalid and version has NO variations, set to null
+                    setCurrentVariationId(null);
+                }
+                 // Otherwise, keep the current valid variation selected
             }
         } else {
+             // No versions found, reset state
             setCurrentVersionId(null);
             setCurrentVariationId(null);
         }
-        // Dependency array includes currentVersionId to prevent loops but allow reset if data changes
-    }, [designDetailsData, currentVersionId]); 
+        // Dependency array: Only re-run when the fetched data itself changes. 
+        // User clicks will handle setting state directly via handleVersionChange/handleVariationChange.
+    }, [designDetailsData]); // Removed currentVersionId from dependencies
 
     // --- Mutations ---
     const addDesignMutation = useAddDesign(selectedProjectId || ''); 
@@ -583,6 +878,20 @@ export default function ProjectsOverviewPage() {
     const addCommentMutation = useAddComment(selectedDesignIdForModal || '', currentVariationId || '');
     // NEW: Instantiate version update hook
     const updateVersionDetailsMutation = useUpdateVersionDetails(currentVersionId || '', selectedDesignIdForModal || ''); 
+    // NEW: Instantiate version with variations hook (moved inside component)
+    const addVersionWithVariationsMutation = useAddVersionWithVariations(
+        selectedDesignIdForModal || '', 
+        selectedProjectId || '',
+        // Provide setters to update state on success
+        setCurrentVersionId, 
+        setCurrentVariationId 
+    );
+    // NEW: Instantiate add variations to version hook
+    const addVariationsToVersionMutation = useAddVariationsToVersion(
+        currentVersionId || '',
+        selectedDesignIdForModal || '',
+        selectedProjectId || ''
+    );
 
     // --- Handlers ---
     const handleSelectProject = (projectId: string) => {
@@ -601,10 +910,10 @@ export default function ProjectsOverviewPage() {
                  resetAddDesignForm(); // Reset the correct form
                  // Optionally close dialog if needed, depends on Dialog structure
                  // setIsAddDesignDialogOpen(false); // Example if state controlled
-             }
+            }
         });
     };
-    
+
     // Corrected Dropzone prop
     const handleDrop = useCallback(
         (acceptedFiles: File[]) => {
@@ -702,7 +1011,7 @@ export default function ProjectsOverviewPage() {
         updateVersionDetailsMutation.mutate(
             { stage: editingVersionStage, status: editingVersionStatus },
             {
-                onSuccess: (data) => {
+            onSuccess: (data) => {
                     setIsEditingVersionDetails(false); // Exit edit mode on success
                     // Invalidate the design grid query to reflect changes
                     queryClient.invalidateQueries({ queryKey: ['designs', selectedProjectId] }); 
@@ -713,6 +1022,66 @@ export default function ProjectsOverviewPage() {
                 },
             }
         );
+    };
+
+    // --- NEW: Handler to trigger file input for Add Version ---
+    const handleAddNewVersionClick = () => {
+        if (!selectedDesignIdForModal) {
+            toast.error("Cannot add version: No design selected.");
+            return;
+        }
+        // Trigger the hidden file input
+        addVersionFileInputRef.current?.click(); 
+    };
+
+    // --- NEW: Handler for when files are selected for a new version ---
+    const handleVersionFilesSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+        if (!selectedDesignIdForModal) {
+             toast.error("Error: Design context lost during file selection.");
+             return;
+        }
+        const files = event.target.files;
+        if (files && files.length > 0) {
+            console.log(`[AddVersion] Files selected:`, files);
+            // Convert FileList to Array and call the mutation
+            addVersionWithVariationsMutation.mutate({ files: Array.from(files) });
+        } else {
+            console.log("[AddVersion] No files selected.");
+        }
+        // Reset file input value to allow selecting the same file again
+        if (event.target) {
+            event.target.value = '';
+        }
+    };
+
+    // --- NEW: Handler to trigger file input for Add Variation ---
+    const handleAddNewVariationClick = () => {
+        if (!currentVersionId) {
+            toast.error("Cannot add variation: No version selected.");
+            return;
+        }
+        // Trigger the hidden file input
+        addVariationFileInputRef.current?.click(); 
+    };
+
+    // --- NEW: Handler for when files are selected for a new variation ---
+    const handleVariationFilesSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+        if (!currentVersionId) {
+             toast.error("Error: Version context lost during file selection.");
+             return;
+        }
+        const files = event.target.files;
+        if (files && files.length > 0) {
+            console.log(`[AddVar] Files selected:`, files);
+            // Convert FileList to Array and call the mutation
+            addVariationsToVersionMutation.mutate({ files: Array.from(files) });
+        } else {
+            console.log("[AddVar] No files selected.");
+        }
+        // Reset file input value
+        if (event.target) {
+            event.target.value = '';
+        }
     };
 
     // --- Render ---
@@ -779,43 +1148,43 @@ export default function ProjectsOverviewPage() {
                             <CardHeader>
                                 <CardTitle>Upload New Designs</CardTitle>
                                 <CardDescription>Drag & drop files here to create new designs in this project.</CardDescription>
-                            </CardHeader>
-                            <CardContent>
+                </CardHeader>
+                <CardContent>
                                 <Dropzone onFilesAccepted={handleDrop} /> 
                                 {uploadQueue.map(item => (
                                     <div key={item.id}>...display file item...</div>
                                 ))}
-                            </CardContent>
-                        </Card>
+                </CardContent>
+            </Card>
 
                         <div className="flex justify-between items-center mb-4">
                              <h2 className="text-2xl font-semibold">Designs</h2>
                              <Dialog> 
-                                <DialogTrigger asChild>
-                                    <Button size="sm">
+                        <DialogTrigger asChild>
+                            <Button size="sm">
                                         <PlusCircle className="mr-2 h-4 w-4" /> Add Design Manually
-                                    </Button>
-                                </DialogTrigger>
+                            </Button>
+                        </DialogTrigger>
                                 <DialogContent>
-                                     <DialogHeader>
-                                        <DialogTitle>Add New Design</DialogTitle>
+                            <DialogHeader>
+                                <DialogTitle>Add New Design</DialogTitle>
                                         <DialogDescription>Enter a name for the new design.</DialogDescription>
-                                    </DialogHeader>
+                            </DialogHeader>
                                     <form onSubmit={handleSubmitAddDesign(handleAddDesignSubmit)} className="space-y-4">
-                                        <div className="space-y-1">
+                                <div className="space-y-1">
                                             <Label htmlFor="designName">Design Name</Label>
                                             <Input id="designName" {...registerAddDesign("name")} />
                                             {addDesignFormErrors.name && <p className="text-xs text-red-600">{addDesignFormErrors.name.message}</p>}
-                                        </div>
-                                        <DialogFooter>
+                                </div>
+                                <DialogFooter>
                                             <DialogClose asChild><Button type="button" variant="outline">Cancel</Button></DialogClose>
-                                            <Button type="submit" disabled={addDesignMutation.isPending}>
+                                    <Button type="submit" disabled={addDesignMutation.isPending}>
                                                 {addDesignMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null} Add Design
-                                            </Button>
-                                        </DialogFooter>
-                                    </form>
-                                </DialogContent>
-                             </Dialog>
+                                    </Button>
+                                </DialogFooter>
+                            </form>
+                        </DialogContent>
+                    </Dialog>
                         </div>
                         
                         {/* Design Grid Area */}
@@ -929,17 +1298,51 @@ export default function ProjectsOverviewPage() {
                                            </div>
                                            {/* Version Buttons */} 
                                            <div className="flex flex-wrap gap-2">
-                                                {designDetailsData?.versions.map((version) => (
-                                                    <Button 
-                                                        key={version.id} 
-                                                        variant={currentVersionId === version.id ? 'default' : 'outline'} 
-                                                        size="sm"
-                                                        onClick={() => handleVersionChange(version.id)}
-                                                        className="min-w-[4rem]"
-                                                    >
-                                                        V{version.version_number}
-                                                    </Button>
-                                                ))}
+                                                {designDetailsData?.versions.map((version) => {
+                                                    // Temporary variable for stage to help linter
+                                                    const stage = version.stage;
+                                                    return (
+                                                        <Button 
+                                                            key={version.id} 
+                                                            variant={currentVersionId === version.id ? 'default' : 'outline'} 
+                                                            size="sm"
+                                                            onClick={() => handleVersionChange(version.id)}
+                                                            className="min-w-[4rem] relative pr-5 group"
+                                                        >
+                                                            V{version.version_number}
+                                                            {/* Stage Indicator - positioned absolutely */} 
+                                                            {stage && (
+                                                                <Badge 
+                                                                    variant="secondary"
+                                                                    className={cn(
+                                                                        "absolute -top-1 -right-1 px-1 py-0 text-xs leading-tight rounded-full transition-opacity group-hover:opacity-100",
+                                                                        // Color coding based on actual stages
+                                                                        stage === DesignStage.Sketch && "bg-gray-200 text-gray-800", // Sketch = Gray
+                                                                        stage === DesignStage.Refine && "bg-yellow-200 text-yellow-800", // Refine = Yellow
+                                                                        stage === DesignStage.Color && "bg-blue-200 text-blue-800", // Color = Blue
+                                                                        stage === DesignStage.Final && "bg-green-200 text-green-800" // Final = Green
+                                                                        // Removed other non-existent stages
+                                                                    )}
+                                                                    title={stage} // Tooltip on hover
+                                                                >
+                                                                    {/* Show first letter or abbreviation */} 
+                                                                    {stage.charAt(0).toUpperCase()}
+                                                                    {/* Or use an icon map */} 
+                                                                </Badge>
+                                                            )}
+                                                        </Button>
+                                                    );
+                                                })}
+                                                {/* Add Version Button - Adjusted Styling */} 
+                                                <Button 
+                                                    variant="outline" 
+                                                    size="sm" // Rely on size="sm" for height
+                                                    className="p-2 ml-2" // Use padding for square-like appearance 
+                                                    onClick={handleAddNewVersionClick}
+                                                    title="Add New Version"
+                                                >
+                                                    <PlusCircle className="h-4 w-4" />
+                                                </Button>
                                                 {(!designDetailsData?.versions || designDetailsData.versions.length === 0) && (
                                                     <p className="text-xs text-muted-foreground italic">No versions found.</p>
                                                 )}
@@ -964,6 +1367,17 @@ export default function ProjectsOverviewPage() {
                                                        </Button>
                                                    );
                                                })}
+                                               {/* Add Variation Button */} 
+                                               <Button 
+                                                   variant="outline" 
+                                                   size="sm" 
+                                                   className="p-2 ml-2" // Consistent styling 
+                                                   onClick={handleAddNewVariationClick}
+                                                   title="Add New Variation"
+                                                   disabled={!currentVersionId} // Disable if no version is selected
+                                               >
+                                                   <PlusCircle className="h-4 w-4" />
+                                               </Button>
                                                {(!currentVersion?.variations || currentVersion.variations.length === 0) && (
                                                    <p className="text-xs text-muted-foreground italic">No variations for this version.</p>
                                                )}
@@ -971,6 +1385,24 @@ export default function ProjectsOverviewPage() {
                                        </div>
                                        {/* --- End of Variation Section --- */} 
                                    </nav>
+
+                                   {/* Hidden File Inputs */} 
+                                   <input 
+                                       type="file"
+                                       ref={addVersionFileInputRef}
+                                       onChange={handleVersionFilesSelected}
+                                       className="hidden"
+                                       multiple 
+                                       accept="image/*" 
+                                   />
+                                    <input 
+                                       type="file"
+                                       ref={addVariationFileInputRef}
+                                       onChange={handleVariationFilesSelected}
+                                       className="hidden"
+                                       multiple 
+                                       accept="image/*" 
+                                   />
 
                                    {/* Image Viewer */} 
                                    <div className="p-4 flex items-center justify-center overflow-hidden">
