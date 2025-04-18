@@ -36,6 +36,7 @@ export type Design = {
     updated_at: string;
     created_by: string; // Assuming this links to a user ID
     stage: DesignStage;
+    latest_thumbnail_path?: string | null; // Added optional field for RPC result
 };
 
 // Type for inserting a new design (used on Project page)
@@ -105,6 +106,21 @@ export type NewVariationData = {
     // file_path will be added after upload
 };
 
+// --- Comment Type ---
+export type Comment = {
+    id: string; // uuid
+    variation_id: string; // uuid
+    user_id: string; // uuid from auth.users
+    content: string; // text
+    parent_comment_id: string | null; // uuid, for threading
+    x_coordinate: number | null; // real
+    y_coordinate: number | null; // real
+    created_at: string; // timestamptz
+    updated_at: string; // timestamptz
+    // Optional: Fetch profile details using the user_id
+    profiles?: { display_name?: string; avatar_url?: string; } | null;
+};
+
 // --- Upload Types ---
 // Type for file info in upload queues
 export interface UploadingFileInfo {
@@ -121,13 +137,38 @@ export interface UploadingFileInfo {
   uploadUrl?: string; // From UploadThing
 }
 
+// --- Combined Types for Data Fetching ---
 
-// Combined type used on Design Detail page query
-export type DesignWithVersions = Design & { versions: Version[] }; 
+// A Variation, including its comments
+export type VariationDetail = Variation & {
+    comments: Comment[];
+};
 
-// Used on Version Detail page query
+// A Version, including its variations (which now include comments)
+export type VersionWithVariations = Version & {
+    variations: VariationDetail[];
+};
+
+// The full Design details needed for the modal
+export type DesignDetailsData = Design & {
+    versions: VersionWithVariations[];
+};
+
+// Combined type used on Design Detail page query (kept for potential separate page use)
+export type DesignWithVersions = Design & { versions: Version[] };
+
+// Used on Version Detail page query (kept for potential separate page use)
 export type VersionWithDetails = Version & {
     variations: Variation[];
     design?: Design; // Include parent design info
     project?: Project; // Include parent project info
+};
+
+// --- NEW: Type for data returned by get_designs_with_latest_thumbnail RPC ---
+export type DesignGridItem = Pick<
+    Design, 
+    'id' | 'project_id' | 'name' | 'status' | 'created_at' | 'updated_at' | 'created_by'
+> & {
+    latest_version_stage: DesignStage | null;
+    latest_thumbnail_path: string | null;
 }; 

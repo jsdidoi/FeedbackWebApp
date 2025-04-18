@@ -840,7 +840,7 @@ export default function VersionDetailPage() {
             });
         };
     }, []); // Empty dependency array means this cleanup runs only on unmount
-
+    
     // --- Loading & Error States ---
     if (isLoading) {
         return <div className="flex justify-center items-center h-screen"><Loader2 className="h-8 w-8 animate-spin" /> Loading Version Details...</div>;
@@ -854,8 +854,8 @@ export default function VersionDetailPage() {
                 {/* Provide links back up the hierarchy */}
                 <div className="mt-4 space-x-4">
                     <Link href={`/projects/${projectId}/designs/${designId}`} className="text-blue-600 hover:underline">
-                        Return to Design
-                    </Link>
+                    Return to Design
+                </Link>
                     <Link href={`/projects/${projectId}`} className="text-blue-600 hover:underline">
                         Return to Project
                     </Link>
@@ -1093,27 +1093,27 @@ export default function VersionDetailPage() {
                                 <form onSubmit={handleSubmitVariation(handleAddVariationSubmit)}>
                                      {/* Re-add Notes Textarea here if needed by react-hook-form */}
                                      {/* ... */}
-                                    <VariationDialogFooter>
+                                <VariationDialogFooter>
                                         {/* Add asChild here */}
-                                        <VariationDialogClose asChild>
+                                    <VariationDialogClose asChild>
                                             <Button type="button" variant="outline" onClick={resetAddVariationDialog} disabled={addVariationMutation.isPending}>Cancel</Button>
-                                        </VariationDialogClose>
+                                    </VariationDialogClose>
                                         {/* Changed button text, disabled if queue is empty */}
                                         <Button 
                                             type="submit" 
                                             disabled={addVariationMutation.isPending || uploadQueue.filter((f: QueueFile) => f.status === 'pending').length === 0}
                                         >
                                             {addVariationMutation.isPending ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Uploading...</> : `Upload Queued Files`}
-                                        </Button>
-                                    </VariationDialogFooter>
-                                 </form>
+                                    </Button>
+                                </VariationDialogFooter>
+                            </form>
                             </div> {/* End of space-y-4 div */}
                         </VariationDialogContent>
                     </VariationDialog>
                 </CardHeader>
-                 <CardContent>
+                <CardContent>
                    {isLoading || isLoadingUrls ? ( 
-                       <div className="flex justify-center items-center p-4"><Loader2 className="h-6 w-6 animate-spin" /> Loading Variations...</div>
+                     <div className="flex justify-center items-center p-4"><Loader2 className="h-6 w-6 animate-spin" /> Loading Variations...</div>
                    ) : versionData.variations && versionData.variations.length > 0 ? (
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
                             {versionData.variations.map((variation: Variation) => {
@@ -1127,9 +1127,9 @@ export default function VersionDetailPage() {
                                 );
                             })}
                         </div>
-                    ) : (
-                        <p className="italic text-muted-foreground text-center p-4">No variations have been created for this version yet.</p>
-                    )}
+                   ) : (
+                     <p className="italic text-muted-foreground text-center p-4">No variations have been created for this version yet.</p>
+                   )}
                 </CardContent>
             </Card>
 
