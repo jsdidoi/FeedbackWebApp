@@ -6,7 +6,7 @@ import { useAuth } from '@/providers/AuthProvider';
 import { useParams, useRouter } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Badge } from "@/components/ui/badge";
-import { Loader2, PlusCircle, Pencil, Check, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Loader2, PlusCircle, Pencil, Check, X, ChevronLeft, ChevronRight, Replace, RefreshCw, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import Breadcrumbs, { BreadcrumbItem } from '@/components/ui/breadcrumbs';
 import { Button } from '@/components/ui/button';
@@ -51,7 +51,8 @@ import {
     designOverallStatuses, 
     DesignOverallStatus, 
     DesignGridItem,
-    VersionRoundStatus
+    VersionRoundStatus,
+    VariationFeedbackStatus
 } from '@/types/models';
 import { ModalImageViewer } from '@/components/modal/ModalImageViewer';
 import {
@@ -61,6 +62,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Comment } from '@/types/models';
+import { CommentCard } from '@/components/cards/CommentCard';
 
 // For Upload Queue
 interface UploadingFileInfo {
@@ -181,6 +184,30 @@ const fetchDesignDetails = async (supabase: any, designId: string): Promise<Desi
     }
 
     return data as DesignDetailsData | null;
+};
+
+// --- NEW: Fetch Comments for a Specific Variation ---
+const fetchCommentsForVariation = async (supabase: any, variationId: string | null): Promise<Comment[]> => {
+    if (!supabase || !variationId) return []; // Return empty if no variation ID
+
+    const { data, error } = await supabase
+        .from('comments')
+        .select(`
+            *,
+            profiles:user_id ( display_name ) 
+        `)
+        .eq('variation_id', variationId)
+        .order('created_at', { ascending: true }); // Show oldest comments first
+
+    if (error) {
+        console.error("Error fetching comments:", error.message); // Log the message specifically
+        throw new Error(`Failed to fetch comments: ${error.message}`);
+    }
+    // Ensure profiles is always an object or null
+    return data?.map((comment: any) => ({ // Explicitly type comment as any for mapping
+        ...comment, 
+        profiles: comment.profiles || null 
+    })) || [];
 };
 
 // --- Add Design Hook ---
@@ -355,21 +382,22 @@ const useCreateDesignFromUpload = (
 
 // --- NEW: Add Comment Hook ---
 const useAddComment = (designId: string, variationId: string) => {
-    const { supabase } = useAuth();
+    const { supabase, user } = useAuth(); // Get user from auth
     const queryClient = useQueryClient();
 
     return useMutation({
         mutationFn: async (commentText: string) => {
             if (!supabase) throw new Error("Supabase client not available");
+            if (!user) throw new Error("User not authenticated"); // Check for user
             if (!designId) throw new Error("Design ID is required");
             if (!variationId) throw new Error("Variation ID is required");
             if (!commentText?.trim()) throw new Error("Comment text cannot be empty");
 
             const insertData = {
-                design_id: designId,
                 variation_id: variationId,
-                text: commentText.trim(),
-                // Add other fields as needed
+                user_id: user.id, // Add user_id
+                content: commentText.trim(), // Changed 'text' to 'content'
+                // Removed design_id as it doesn't exist in the table
             };
 
             const { data, error } = await supabase
@@ -379,14 +407,16 @@ const useAddComment = (designId: string, variationId: string) => {
                 .single();
 
             if (error) {
-                console.error('Error adding comment:', error);
+                // Log the specific Supabase error message
+                console.error('Supabase Error inserting comment:', error.message); 
                 throw new Error(`Failed to add comment: ${error.message}`);
             }
             return data;
         },
         onSuccess: (data) => {
             toast.success(`Comment added successfully!`);
-            queryClient.invalidateQueries({ queryKey: ['comments', designId, variationId] }); 
+            // Invalidate the specific comments query for this variation
+            queryClient.invalidateQueries({ queryKey: ['comments', variationId] }); 
         },
         onError: (error) => {
             toast.error(error.message);
@@ -435,6 +465,50 @@ const useUpdateVersionDetails = (versionId: string, designId: string) => { // Ne
             // the project's designs list might be needed IF the definition of "latest" changes due to status.
             // For now, let's rely on designDetails invalidation.
             queryClient.invalidateQueries({ queryKey: ['designs', data.project_id] }); 
+        },
+        onError: (error) => {
+            toast.error(error.message);
+        },
+    });
+};
+
+// --- NEW: Hook to Update VARIATION Details (Status) ---
+const useUpdateVariationDetails = (variationId: string, designId: string) => { // Need designId for invalidation
+    const { supabase } = useAuth();
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async ({ status }: { status: VariationFeedbackStatus }) => {
+            if (!supabase) throw new Error("Supabase client not available");
+            if (!variationId) throw new Error("Variation ID is required");
+
+            const updateData = {
+                status: status,
+                updated_at: new Date().toISOString(),
+            };
+
+            const { data, error } = await supabase
+                .from('variations') // <-- Update VARIATIONS table
+                .update(updateData)
+                .eq('id', variationId)
+                .select()
+                .single();
+
+            if (error) {
+                console.error('Error updating variation details:', error);
+                throw new Error(`Failed to update variation status: ${error.message}`);
+            }
+            return data;
+        },
+        onSuccess: (data) => {
+            toast.success(`Variation ${data.variation_letter} status updated to ${data.status}!`);
+            // Invalidate design details to refetch variation data within the modal
+            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] }); 
+            // Potentially invalidate the main grid too, if its display depends on variation status
+            queryClient.invalidateQueries({ queryKey: ['designs', data.project_id] }); // Assuming variation has project_id? NO - need design's project_id
+            // To invalidate designs, we need the projectId. We only have designId here.
+            // Simplest is to rely on designDetails invalidation for the modal refresh.
+            // If grid needs update, we might need to pass projectId to this hook or handle invalidation differently.
         },
         onError: (error) => {
             toast.error(error.message);
@@ -753,6 +827,183 @@ const useAddVariationsToVersion = (
     });
 };
 
+// --- NEW: Hook to Replace a Variation's File ---
+const useReplaceVariationFile = (
+    variationId: string,
+    designId: string, // Needed for path construction and invalidation
+    projectId: string // Needed for path construction
+) => {
+    const { supabase } = useAuth();
+    const queryClient = useQueryClient();
+
+    type ReplaceVariationPayload = {
+        file: File;
+        // We might need the old file path if we want to delete the old one explicitly, 
+        // but upsert should handle overwriting.
+    };
+
+    return useMutation({
+        mutationFn: async ({ file }: ReplaceVariationPayload) => {
+            if (!supabase) throw new Error("Supabase client not available");
+            if (!variationId) throw new Error("Cannot replace file: No variation selected.");
+            if (!designId) throw new Error("Cannot replace file: Design ID missing.");
+            if (!projectId) throw new Error("Cannot replace file: Project ID missing.");
+            if (!file) throw new Error("No file provided for replacement.");
+
+            console.log(`[ReplaceVar] Starting replacement for variation ${variationId} with file ${file.name}`);
+
+            // --- 1. Determine Storage Path --- 
+            // We need the version ID. We could pass it in, or fetch the variation details first.
+            // Fetching is safer but adds latency. Let's assume we construct it for now, 
+            // requiring versionId to be passed or available in scope where hook is used.
+            // OR, fetch the variation to get its current file_path and version_id.
+            const { data: variationData, error: fetchVarError } = await supabase
+                .from('variations')
+                .select('version_id, file_path')
+                .eq('id', variationId)
+                .single();
+
+            if (fetchVarError || !variationData) {
+                console.error("[ReplaceVar] Error fetching variation details:", fetchVarError);
+                throw new Error(`Failed to get details for variation ${variationId}: ${fetchVarError?.message}`);
+            }
+
+            const versionId = variationData.version_id;
+            // Construct the path using the fetched versionId. Use the NEW filename.
+            const storagePath = `projects/${projectId}/designs/${designId}/versions/${versionId}/variations/${variationId}/${file.name}`;
+            const bucketName = 'design-variations';
+            console.log(`[ReplaceVar] Determined storage path: ${storagePath}`);
+
+            // --- 2. Upload New File (Upsert) --- 
+            const { error: uploadError } = await supabase.storage
+                .from(bucketName)
+                .upload(storagePath, file, { upsert: true });
+
+            if (uploadError) {
+                 console.error(`[ReplaceVar] Upload failed for ${file.name}:`, uploadError);
+                 throw new Error(`Storage upload failed: ${uploadError.message}`);
+            }
+            console.log(`[ReplaceVar] Successfully uploaded ${file.name} to replace content at ${storagePath}`);
+
+            // --- 3. Update Variation File Path (if filename changed) --- 
+            // Check if the new path is different from the old one stored.
+            if (variationData.file_path !== storagePath) {
+                const { error: updateError } = await supabase
+                    .from('variations')
+                    .update({ file_path: storagePath, updated_at: new Date().toISOString() })
+                    .eq('id', variationId);
+
+                if (updateError) {
+                    console.warn(`[ReplaceVar] File replaced in storage, but failed to update file_path in DB for ${variationId}:`, updateError);
+                    toast.warning(`File replaced, but DB record update failed.`);
+                    // Throw error here? Or allow partial success?
+                    throw new Error(`Failed to update variation record: ${updateError.message}`);
+                } else {
+                    console.log(`[ReplaceVar] Successfully updated file_path for variation ${variationId}`);
+                }
+            } else {
+                 console.log(`[ReplaceVar] File path unchanged, skipping DB update.`);
+                 // Still might want to update the updated_at timestamp?
+                 await supabase
+                    .from('variations')
+                    .update({ updated_at: new Date().toISOString() })
+                    .eq('id', variationId);
+            }
+
+            return { variationId, newFilePath: storagePath };
+        },
+        onSuccess: (data) => {
+            // data = { variationId, newFilePath }
+            toast.success(`Variation file replaced successfully!`);
+            // Invalidate design details to refresh the modal image viewer
+            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] }); 
+        },
+        onError: (error) => {
+            toast.error(`Failed to replace variation file: ${error.message}`);
+        },
+    });
+};
+
+// --- NEW: Hook to Delete a Variation ---
+const useDeleteVariation = (
+    variationId: string,
+    designId: string // Needed for invalidation
+    // ProjectId not strictly needed for deletion itself, but good practice? Pass if needed.
+) => {
+    const { supabase } = useAuth();
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async () => {
+            if (!supabase) throw new Error("Supabase client not available");
+            if (!variationId) throw new Error("Cannot delete: No variation ID provided.");
+
+            console.log(`[DeleteVar] Starting deletion for variation ${variationId}`);
+
+            // --- 1. Get File Path --- 
+            const { data: variationData, error: fetchVarError } = await supabase
+                .from('variations')
+                .select('file_path') // Only need the path for storage deletion
+                .eq('id', variationId)
+                .single();
+            
+            if (fetchVarError && fetchVarError.code !== 'PGRST116') { // Ignore 'not found' error if already deleted?
+                console.error("[DeleteVar] Error fetching variation details:", fetchVarError);
+                throw new Error(`Failed to get details for variation ${variationId}: ${fetchVarError?.message}`);
+            }
+            
+            const filePath = variationData?.file_path;
+            const bucketName = 'design-variations';
+
+            // --- 2. Delete File from Storage (if path exists) --- 
+            if (filePath) {
+                console.log(`[DeleteVar] Attempting to delete file from storage: ${filePath}`);
+                const { error: storageError } = await supabase.storage
+                    .from(bucketName)
+                    .remove([filePath]); // remove expects an array of paths
+
+                if (storageError) {
+                    // Log error but potentially continue to delete DB record?
+                    // Or should failure here stop the process? Let's stop for now.
+                    console.error("[DeleteVar] Error deleting file from storage:", storageError);
+                    toast.error(`Failed to delete file from storage, aborting DB deletion.`); // More specific error
+                    throw new Error(`Storage deletion failed: ${storageError.message}`);
+                }
+                 console.log(`[DeleteVar] Successfully deleted file from storage: ${filePath}`);
+            } else {
+                console.log("[DeleteVar] No file path found for variation, skipping storage deletion.");
+            }
+
+            // --- 3. Delete Variation Record from Database --- 
+            const { error: dbError } = await supabase
+                .from('variations')
+                .delete()
+                .eq('id', variationId);
+
+            if (dbError) {
+                console.error("[DeleteVar] Error deleting variation record from DB:", dbError);
+                 // Attempted storage deletion might have succeeded, causing potential orphan?
+                 // For now, just report DB error.
+                throw new Error(`Failed to delete variation record: ${dbError.message}`);
+            }
+             console.log(`[DeleteVar] Successfully deleted variation record ${variationId} from DB.`);
+
+            return { variationId }; // Return deleted ID for potential UI updates
+        },
+        onSuccess: (data) => {
+            // data = { variationId }
+            toast.success(`Variation deleted successfully!`);
+            // Invalidate design details to refresh the modal (remove variation button, maybe change selected image)
+            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] }); 
+            // Note: We might need more sophisticated logic here to select the *next* available variation 
+            // if the currently selected one was deleted. The useEffect might handle this now.
+        },
+        onError: (error) => {
+            toast.error(`Failed to delete variation: ${error.message}`);
+        },
+    });
+};
+
 export default function ProjectsOverviewPage() {
     const { supabase } = useAuth();
     const params = useParams();
@@ -772,14 +1023,11 @@ export default function ProjectsOverviewPage() {
     const [currentVariationId, setCurrentVariationId] = useState<string | null>(null);
     // NEW: State for comment input
     const [newCommentText, setNewCommentText] = useState('');
-    // NEW: State for editing VERSION stage/status
-    const [isEditingVersionDetails, setIsEditingVersionDetails] = useState(false);
-    const [editingVersionStage, setEditingVersionStage] = useState<DesignStage | null>(null);
-    const [editingVersionStatus, setEditingVersionStatus] = useState<VersionRoundStatus | null>(null);
 
     // --- Refs for hidden file inputs ---
     const addVersionFileInputRef = useRef<HTMLInputElement>(null);
     const addVariationFileInputRef = useRef<HTMLInputElement>(null);
+    const replaceVariationFileInputRef = useRef<HTMLInputElement>(null);
 
     // --- Form Hook for Add Design Dialog (Moved to Top Level) ---
     const {
@@ -821,6 +1069,19 @@ export default function ProjectsOverviewPage() {
         enabled: !!supabase && !!selectedDesignIdForModal && isDesignModalOpen, // Only run when modal is open and ID is set
         staleTime: 5 * 60 * 1000, // Keep data fresh for 5 mins
         refetchOnWindowFocus: false, // Optional: prevent refetch on focus
+    });
+
+    // NEW: Query for comments on the selected variation
+    const { 
+        data: commentsData, 
+        isLoading: isLoadingComments, 
+        error: errorComments 
+    } = useQuery<Comment[]>({ 
+        queryKey: ['comments', currentVariationId], 
+        queryFn: () => fetchCommentsForVariation(supabase, currentVariationId), 
+        enabled: !!supabase && !!currentVariationId, // Only run if variation ID is available
+        staleTime: 1 * 60 * 1000, // Comments can be slightly stale (1 min)
+        refetchOnWindowFocus: true, // Refetch comments if window is refocused
     });
 
     // Effect to handle initial project selection based on URL or first project
@@ -891,6 +1152,23 @@ export default function ProjectsOverviewPage() {
         currentVersionId || '',
         selectedDesignIdForModal || '',
         selectedProjectId || ''
+    );
+    // NEW: Instantiate replace variation file hook
+    const replaceVariationFileMutation = useReplaceVariationFile(
+        currentVariationId || '',
+        selectedDesignIdForModal || '',
+        selectedProjectId || ''
+    );
+    // NEW: Instantiate delete variation hook
+    const deleteVariationMutation = useDeleteVariation(
+        currentVariationId || '',
+        selectedDesignIdForModal || ''
+        // Removed projectId as it's not defined in the hook's parameters
+    );
+    // NEW: Instantiate variation update hook
+    const updateVariationDetailsMutation = useUpdateVariationDetails(
+        currentVariationId || '', 
+        selectedDesignIdForModal || ''
     );
 
     // --- Handlers ---
@@ -989,41 +1267,6 @@ export default function ProjectsOverviewPage() {
         setCurrentVariationId(variationId);
     };
 
-    // --- NEW: Handlers for Editing VERSION Details ---
-    const handleEditVersionDetailsClick = () => {
-        if (!currentVersion) return;
-        setEditingVersionStage(currentVersion.stage);
-        setEditingVersionStatus(currentVersion.status);
-        setIsEditingVersionDetails(true);
-    };
-
-    const handleCancelEditVersionDetails = () => {
-        setIsEditingVersionDetails(false);
-        setEditingVersionStage(null); // Clear temporary state
-        setEditingVersionStatus(null);
-    };
-
-    const handleSaveVersionDetails = () => {
-        if (!currentVersionId || !editingVersionStage || !editingVersionStatus) {
-            toast.error("Missing information to save version details.");
-            return;
-        }
-        updateVersionDetailsMutation.mutate(
-            { stage: editingVersionStage, status: editingVersionStatus },
-            {
-            onSuccess: (data) => {
-                    setIsEditingVersionDetails(false); // Exit edit mode on success
-                    // Invalidate the design grid query to reflect changes
-                    queryClient.invalidateQueries({ queryKey: ['designs', selectedProjectId] }); 
-                    // Toast and designDetails invalidation are handled by the hook
-                },
-                onError: () => {
-                     // Toast handled by hook, maybe add specific UI feedback?
-                },
-            }
-        );
-    };
-
     // --- NEW: Handler to trigger file input for Add Version ---
     const handleAddNewVersionClick = () => {
         if (!selectedDesignIdForModal) {
@@ -1081,6 +1324,50 @@ export default function ProjectsOverviewPage() {
         // Reset file input value
         if (event.target) {
             event.target.value = '';
+        }
+    };
+
+    // --- NEW: Handler to trigger file input for Replace Variation ---
+    const handleReplaceVariationClick = () => {
+        console.log("[ReplaceVar] Button clicked. Current Variation ID:", currentVariationId);
+        if (!currentVariationId) {
+            toast.error("Cannot replace file: No variation selected.");
+            return;
+        }
+        console.log("[ReplaceVar] File input ref:", replaceVariationFileInputRef.current);
+        // Trigger the hidden file input
+        replaceVariationFileInputRef.current?.click(); 
+    };
+
+    // --- NEW: Handler for when a file is selected for replacement ---
+    const handleReplaceFileSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+        if (!currentVariationId) {
+             toast.error("Error: Variation context lost during file selection.");
+             return;
+        }
+        const file = event.target.files?.[0]; // Only handle single file replacement
+        if (file) {
+            console.log(`[ReplaceVar] File selected for replacement:`, file);
+            replaceVariationFileMutation.mutate({ file });
+        } else {
+            console.log("[ReplaceVar] No file selected.");
+        }
+        // Reset file input value
+        if (event.target) {
+            event.target.value = '';
+        }
+    };
+
+    // --- NEW: Handler for deleting the current variation ---
+    const handleDeleteVariationClick = () => {
+        if (!currentVariationId) {
+            toast.error("Cannot delete: No variation selected.");
+            return;
+        }
+        const variationLetter = selectedVariation?.variation_letter || 'this variation'; // Get letter for prompt
+        if (window.confirm(`Are you sure you want to permanently delete variation ${variationLetter}? This cannot be undone.`)) {
+            console.log(`[DeleteVar] Confirmed deletion for variation ${currentVariationId}`);
+            deleteVariationMutation.mutate(); // No payload needed for the delete mutation itself
         }
     };
 
@@ -1220,236 +1507,379 @@ export default function ProjectsOverviewPage() {
                 {/* --- Design Detail Modal --- */}
                 <Dialog open={isDesignModalOpen} onOpenChange={handleModalOpenChange}>
                    <DialogPortal>
-                       <DialogOverlay className="bg-black/50" /> 
-                       <DialogContent className="p-0 h-[90vh] flex flex-col w-full max-w-full sm:max-w-[95vw] xl:max-w-screen-xl"> {/* Wider max-width */} 
-                           <DialogHeader className="p-4 border-b shrink-0 flex flex-row justify-between items-center"> {/* Keep Header Flex */} 
-                               {/* Wrap Title ONLY */} 
-                               <div className="flex items-center gap-4"> 
-                                    <DialogTitle>{designDetailsData?.name || 'Loading Design...'}</DialogTitle>
-                               </div>
-                               {/* Close button will implicitly be pushed right */} 
-                           </DialogHeader>
-                           
-                           {/* Main Content Area - Grid for Image/Nav(Left) and Comments(Right) */} 
-                           <div className="grid grid-cols-[3fr_1fr] flex-grow overflow-hidden"> {/* Adjust column ratio as needed */} 
+                        {/* Hidden File Inputs - Moved outside content for stable refs */} 
+                        <input 
+                            type="file"
+                            ref={addVersionFileInputRef}
+                            onChange={handleVersionFilesSelected}
+                            className="hidden"
+                            multiple 
+                            accept="image/*" 
+                        />
+                         <input 
+                            type="file"
+                            ref={addVariationFileInputRef}
+                            onChange={handleVariationFilesSelected}
+                            className="hidden"
+                            multiple 
+                            accept="image/*" 
+                        />
+                        <input 
+                            type="file"
+                            ref={replaceVariationFileInputRef}
+                            onChange={handleReplaceFileSelected}
+                            className="hidden"
+                            accept="image/*" 
+                        />
 
-                               {/* Left Side (Nav + Image) */} 
-                               <div className="grid grid-rows-[auto_1fr] overflow-hidden">
-                                   {/* Version/Variation Navigation */} 
-                                   <nav className="p-4 border-b overflow-y-auto max-h-[35vh]"> {/* Adjusted max-height */} 
-                                       {/* --- Version Section --- */} 
-                                       <div className="mb-4 pb-4 border-b"> {/* Added border */} 
-                                           <div className="flex justify-between items-center mb-2"> {/* Title + Edit Area */} 
-                                               <h4 className="text-sm font-medium">Version</h4>
-                                               {/* Version Edit Controls - Show only if a version is selected */}
-                                               {currentVersion && (
-                                                    isEditingVersionDetails ? (
-                                                         <div className="flex items-center gap-1"> {/* Edit Mode */} 
-                                                             {/* Stage Select */}
-                                                             <Select 
-                                                                  value={editingVersionStage || ''} 
-                                                                  onValueChange={(value) => setEditingVersionStage(value as DesignStage)}
-                                                             >
-                                                                 <SelectTrigger className="w-[100px] h-7 text-xs">
-                                                                     <SelectValue placeholder="Stage..." />
-                                                                 </SelectTrigger>
-                                                                 <SelectContent>
-                                                                     {Object.values(DesignStage).map((stage) => (
-                                                                         <SelectItem key={stage} value={stage} className="text-xs capitalize">
-                                                                             {stage}
-                                                                         </SelectItem>
-                                                                     ))}
-                                                                 </SelectContent>
-                                                             </Select>
-                                                             {/* Status Select */}
-                                                             <Select 
-                                                                 value={editingVersionStatus || ''} 
-                                                                 onValueChange={(value) => setEditingVersionStatus(value as VersionRoundStatus)}
-                                                             >
-                                                                 <SelectTrigger className="w-[140px] h-7 text-xs">
-                                                                     <SelectValue placeholder="Status..." />
-                                                                 </SelectTrigger>
-                                                                 <SelectContent>
-                                                                     {Object.values(VersionRoundStatus).map((status) => (
-                                                                         <SelectItem key={status} value={status} className="text-xs">
-                                                                             {status}
-                                                                         </SelectItem>
-                                                                     ))}
-                                                                 </SelectContent>
-                                                             </Select>
-                                                             {/* Save/Cancel Buttons */}
-                                                             <Button size="icon" variant="ghost" className="h-7 w-7" onClick={handleSaveVersionDetails} disabled={updateVersionDetailsMutation.isPending}>
-                                                                 {updateVersionDetailsMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin"/> : <Check className="h-4 w-4 text-green-600" />}
-                                                             </Button>
-                                                             <Button size="icon" variant="ghost" className="h-7 w-7" onClick={handleCancelEditVersionDetails} disabled={updateVersionDetailsMutation.isPending}>
-                                                                 <X className="h-4 w-4 text-red-600" />
-                                                             </Button>
-                                                         </div>
-                                                    ) : (
-                                                         <div className="flex items-center gap-1.5"> {/* Display Mode */} 
-                                                            <Badge variant="secondary" className="text-xs capitalize">{currentVersion.stage || 'N/A'}</Badge>
-                                                            <Badge variant="outline" className="text-xs">{currentVersion.status || 'N/A'}</Badge>
-                                                            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={handleEditVersionDetailsClick}>
-                                                                <Pencil className="h-3 w-3" />
-                                                            </Button>
-                                                         </div>
-                                                    )
-                                                )}
-                                           </div>
-                                           {/* Version Buttons */} 
-                                           <div className="flex flex-wrap gap-2">
+                        <DialogOverlay className="bg-black/50" /> 
+                        <DialogContent className="p-0 h-[90vh] flex flex-col w-full max-w-full sm:max-w-[95vw] xl:max-w-screen-xl"> {/* Wider max-width */} 
+                            <DialogHeader className="p-4 border-b shrink-0 flex flex-row justify-between items-center"> {/* Keep Header Flex */} 
+                                {/* Wrap Title ONLY */} 
+                                <div className="flex items-center gap-4"> 
+                                     <DialogTitle>{designDetailsData?.name || 'Loading Design...'}</DialogTitle>
+                                     <DialogDescription className="sr-only">View and manage design versions and variations.</DialogDescription>
+                                </div>
+                                {/* Close button will implicitly be pushed right */} 
+                            </DialogHeader>
+                            
+                            {/* Main Content Area - Grid for Image/Nav(Left) and Comments(Right) */} 
+                            {/* Changed grid ratio to 5fr/2fr */}
+                            <div className="grid grid-cols-[5fr_2fr] flex-grow overflow-hidden"> 
+
+                                {/* Left Side (Nav + Image) */} 
+                                <div className="grid grid-rows-[auto_1fr] overflow-hidden">
+                                    {/* Version/Variation Navigation */} 
+                                    {/* Reduced padding to px-2 pt-1 pb-2 */}
+                                    <nav className="px-2 pt-1 pb-2 border-b overflow-y-auto max-h-[35vh]">
+                                        {/* --- Version Section --- */} 
+                                        {/* Removed pb-2 for consistency */}
+                                        <div className="mb-2 border-b"> 
+                                            <div className="flex justify-between items-center mb-1"> 
+                                                <h4 className="text-sm font-medium">Version</h4>
+                                                {/* Removed the container div and the Select */} 
+                                            </div>
+                                            <div className="flex flex-wrap items-center gap-2 mt-2"> {/* Added items-center */} 
                                                 {designDetailsData?.versions.map((version) => {
-                                                    // Temporary variable for stage to help linter
-                                                    const stage = version.stage;
+                                                    const stage = version.stage; // Use temp var if needed for linter
                                                     return (
-                                                        <Button 
-                                                            key={version.id} 
-                                                            variant={currentVersionId === version.id ? 'default' : 'outline'} 
-                                                            size="sm"
+                                                        <Button
+                                                            key={version.id}
+                                                            variant={currentVersionId === version.id ? 'default' : 'outline'}
+                                                            // size="sm" // Removed size
                                                             onClick={() => handleVersionChange(version.id)}
-                                                            className="min-w-[4rem] relative pr-5 group"
+                                                            // Added explicit sizing, kept existing classes
+                                                            className={cn(
+                                                                "h-auto py-1 px-2 text-xs min-w-[4rem] relative pr-5 group", 
+                                                                currentVersionId !== version.id && "border" // Ensure outline gets border
+                                                            )}
                                                         >
                                                             V{version.version_number}
-                                                            {/* Stage Indicator - positioned absolutely */} 
                                                             {stage && (
-                                                                <Badge 
+                                                                <Badge
                                                                     variant="secondary"
                                                                     className={cn(
                                                                         "absolute -top-1 -right-1 px-1 py-0 text-xs leading-tight rounded-full transition-opacity group-hover:opacity-100",
-                                                                        // Color coding based on actual stages
-                                                                        stage === DesignStage.Sketch && "bg-gray-200 text-gray-800", // Sketch = Gray
-                                                                        stage === DesignStage.Refine && "bg-yellow-200 text-yellow-800", // Refine = Yellow
-                                                                        stage === DesignStage.Color && "bg-blue-200 text-blue-800", // Color = Blue
-                                                                        stage === DesignStage.Final && "bg-green-200 text-green-800" // Final = Green
-                                                                        // Removed other non-existent stages
+                                                                        stage === DesignStage.Sketch && "bg-gray-200 text-gray-800",
+                                                                        stage === DesignStage.Refine && "bg-yellow-200 text-yellow-800",
+                                                                        stage === DesignStage.Color && "bg-blue-200 text-blue-800",
+                                                                        stage === DesignStage.Final && "bg-green-200 text-green-800"
                                                                     )}
-                                                                    title={stage} // Tooltip on hover
+                                                                    title={stage}
                                                                 >
-                                                                    {/* Show first letter or abbreviation */} 
                                                                     {stage.charAt(0).toUpperCase()}
-                                                                    {/* Or use an icon map */} 
                                                                 </Badge>
                                                             )}
                                                         </Button>
                                                     );
                                                 })}
-                                                {/* Add Version Button - Adjusted Styling */} 
-                                                <Button 
-                                                    variant="outline" 
-                                                    size="sm" // Rely on size="sm" for height
-                                                    className="p-2 ml-2" // Use padding for square-like appearance 
+                                                {/* Add Version Button */}
+                                                <Button
+                                                    variant="outline"
+                                                    // Removed size="sm"
+                                                    // Removed p-2, added explicit sizing + ml-2
+                                                    className="h-auto py-1 px-2 ml-2"
                                                     onClick={handleAddNewVersionClick}
                                                     title="Add New Version"
                                                 >
                                                     <PlusCircle className="h-4 w-4" />
                                                 </Button>
+                                                {/* --- MOVED Stage Select Here --- */}
+                                                {currentVersion && (
+                                                    <div className="flex items-center gap-1 ml-auto"> {/* Use ml-auto to push right */} 
+                                                        <Select 
+                                                            value={currentVersion.stage || ''} 
+                                                            onValueChange={(newStage) => { 
+                                                                if (currentVersion.status) { 
+                                                                    updateVersionDetailsMutation.mutate({
+                                                                        stage: newStage as DesignStage,
+                                                                        status: currentVersion.status 
+                                                                    });
+                                                                } else {
+                                                                    toast.error("Cannot update stage: Current status is missing.")
+                                                                }
+                                                            }}
+                                                            disabled={!currentVersion || updateVersionDetailsMutation.isPending} 
+                                                        >
+                                                            <SelectTrigger className="w-[100px] h-7 text-xs">
+                                                                <SelectValue placeholder="Stage..." />
+                                                            </SelectTrigger>
+                                                            <SelectContent>
+                                                                {Object.values(DesignStage).map((stage) => (
+                                                                    <SelectItem key={stage} value={stage} className="text-xs capitalize">
+                                                                        {stage}
+                                                                    </SelectItem>
+                                                                ))}
+                                                            </SelectContent>
+                                                        </Select>
+                                                        {/* Loader during mutation */} 
+                                                        {updateVersionDetailsMutation.isPending && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />} 
+                                                    </div>
+                                                )}
+                                                {/* --- End Moved Stage Select --- */}
                                                 {(!designDetailsData?.versions || designDetailsData.versions.length === 0) && (
                                                     <p className="text-xs text-muted-foreground italic">No versions found.</p>
                                                 )}
-                                           </div>
-                                       </div>
+                                            </div>
+                                        </div>
 
-                                       {/* --- Variation Section --- */} 
-                                       <div className="mt-3"> {/* Add some margin-top */} 
-                                           <h4 className="text-sm font-medium mb-2">Variations for V{currentVersion?.version_number}</h4> 
-                                           <div className="flex flex-wrap gap-2">
-                                               {currentVersion?.variations.map((variation, index) => {
-                                                   const displayLetter = String.fromCharCode(65 + index); // Calculate A, B, C...
-                                                   return (
-                                                       <Button 
-                                                           key={variation.id} 
-                                                           variant={currentVariationId === variation.id ? 'default' : 'outline'}
-                                                           size="sm"
-                                                           onClick={() => handleVariationChange(variation.id)}
-                                                           className="min-w-[3rem]"
-                                                       >
-                                                           {displayLetter}
-                                                       </Button>
-                                                   );
-                                               })}
-                                               {/* Add Variation Button */} 
-                                               <Button 
-                                                   variant="outline" 
-                                                   size="sm" 
-                                                   className="p-2 ml-2" // Consistent styling 
-                                                   onClick={handleAddNewVariationClick}
-                                                   title="Add New Variation"
-                                                   disabled={!currentVersionId} // Disable if no version is selected
-                                               >
-                                                   <PlusCircle className="h-4 w-4" />
-                                               </Button>
-                                               {(!currentVersion?.variations || currentVersion.variations.length === 0) && (
-                                                   <p className="text-xs text-muted-foreground italic">No variations for this version.</p>
-                                               )}
-                                           </div>
-                                       </div>
-                                       {/* --- End of Variation Section --- */} 
-                                   </nav>
+                                        {/* --- Variation Section --- */} 
+                                        {/* Reduced margin to mt-2 */}
+                                        <div className="mt-2"> 
+                                            {/* Reduced margin to mb-1 */} 
+                                            <h4 className="text-sm font-medium mb-1">Variations for V{currentVersion?.version_number}</h4> 
+                                            {/* Reduced margin to mt-2 */}
+                                            <div className="flex flex-wrap items-center gap-2 mt-2"> 
+                                                {currentVersion?.variations.map((variation, index) => {
+                                                    const displayLetter = String.fromCharCode(65 + index); // Calculate A, B, C...
+                                                    return (
+                                                        <Button 
+                                                            key={variation.id} 
+                                                            variant={currentVariationId === variation.id ? 'default' : 'outline'}
+                                                            // size="sm" // Removed size
+                                                            onClick={() => handleVariationChange(variation.id)}
+                                                            // Added explicit sizing, kept existing classes
+                                                            className={cn(
+                                                                "h-auto py-1 px-2 text-xs min-w-[3rem]",
+                                                                currentVariationId !== variation.id && "border" // Ensure outline gets border
+                                                            )}
+                                                        >
+                                                            {displayLetter}
+                                                        </Button>
+                                                    );
+                                                })}
+                                                {/* Add Variation Button */} 
+                                                <Button 
+                                                    variant="outline" 
+                                                    // Removed size="sm"
+                                                    // Removed p-2, added explicit sizing + ml-2
+                                                    className="h-auto py-1 px-2 ml-2" 
+                                                    onClick={handleAddNewVariationClick}
+                                                    title="Add New Variation"
+                                                >
+                                                    <PlusCircle className="h-4 w-4" />
+                                                </Button>
+                                                {(!currentVersion?.variations || currentVersion.variations.length === 0) && (
+                                                    <p className="text-xs text-muted-foreground italic">No variations for this version.</p>
+                                                )}
+                                            </div>
+                                        </div>
+                                        {/* --- End of Variation Section --- */} 
+                                    </nav>
 
-                                   {/* Hidden File Inputs */} 
-                                   <input 
-                                       type="file"
-                                       ref={addVersionFileInputRef}
-                                       onChange={handleVersionFilesSelected}
-                                       className="hidden"
-                                       multiple 
-                                       accept="image/*" 
-                                   />
-                                    <input 
-                                       type="file"
-                                       ref={addVariationFileInputRef}
-                                       onChange={handleVariationFilesSelected}
-                                       className="hidden"
-                                       multiple 
-                                       accept="image/*" 
-                                   />
+                                    {/* Image Viewer Area - Added relative positioning and group */} 
+                                    {/* Reduced padding to p-2 */}
+                                    <div className="p-2 flex items-center justify-center overflow-hidden h-full relative group/imageViewer"> 
+                                         {isLoadingDesignDetails ? (
+                                             <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
+                                         ) : errorDesignDetails ? (
+                                             <div className="text-red-600">Error loading image area.</div>
+                                         ) : designDetailsData ? (
+                                             <ModalImageViewer filePath={selectedVariation?.file_path} />
+                                         ) : (
+                                             <div>No image data.</div>
+                                         )}
+                                         {/* Replace Button Overlay - Appears on hover */} 
+                                         {selectedVariation?.file_path && (
+                                             <Button 
+                                                 variant="outline" 
+                                                 size="icon" 
+                                                 className="absolute bottom-2 right-2 z-10 opacity-0 group-hover/imageViewer:opacity-80 hover:!opacity-100 transition-opacity bg-background/70 hover:bg-background/90"
+                                                 onClick={handleReplaceVariationClick}
+                                                 title="Replace Variation Image"
+                                                 disabled={replaceVariationFileMutation.isPending} // Disable while replacing
+                                             >
+                                                 {replaceVariationFileMutation.isPending 
+                                                    ? <Loader2 className="h-4 w-4 animate-spin" />
+                                                    : <RefreshCw className="h-4 w-4" /> // Changed Icon
+                                                 } 
+                                             </Button>
+                                         )}
+                                         {/* Delete Button Overlay */} 
+                                         <Button 
+                                             variant="destructive" // Destructive variant for delete
+                                             size="icon" 
+                                             className="absolute bottom-2 right-12 z-10 opacity-0 group-hover/imageViewer:opacity-80 hover:!opacity-100 transition-opacity bg-destructive/70 hover:bg-destructive/90 p-1.5" // Adjusted position (right-12), added padding
+                                             onClick={handleDeleteVariationClick}
+                                             title="Delete Variation"
+                                             disabled={deleteVariationMutation.isPending} // Disable while deleting
+                                         >
+                                             {deleteVariationMutation.isPending 
+                                                ? <Loader2 className="h-4 w-4 animate-spin" />
+                                                : <Trash2 className="h-4 w-4" /> // Trash icon
+                                             } 
+                                         </Button>
+                                    </div>
+                                </div>
+                                
+                                {/* Right Side (Details & Comments) */} 
+                                <aside className="border-l overflow-y-auto flex flex-col">
+                                    {isLoadingDesignDetails ? (
+                                        <div className="p-4 text-center"><Loader2 className="h-6 w-6 animate-spin inline-block" /></div>
+                                    ) : errorDesignDetails ? (
+                                        <div className="p-4 text-red-600">Error loading sidebar.</div>
+                                    ) : designDetailsData ? (
+                                        <div className="flex-grow flex flex-col"> {/* Allow comments to grow */} 
+                                            {/* Details Section */} 
+                                            {/* Reduced padding to p-2 */}
+                                            <div className="p-2 border-b shrink-0"> 
+                                                 {/* Reduced margin to mb-1 */}
+                                                 <h4 className="text-base font-semibold mb-1">Details</h4>
+                                                 {/* Variation Details */}
+                                                 <p className="text-xs text-muted-foreground mb-1">Variation Status:</p>
+                                                 {/* Reduced margin to mb-2 */}
+                                                 <Badge variant={selectedVariation?.status === 'Rejected' ? 'destructive' : 'secondary'} className="mb-2">
+                                                      {selectedVariation?.status || 'N/A'}
+                                                 </Badge>
 
-                                   {/* Image Viewer */} 
-                                   <div className="p-4 flex items-center justify-center overflow-hidden">
-                                        {isLoadingDesignDetails ? (
-                                            <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
-                                        ) : errorDesignDetails ? (
-                                            <div className="text-red-600">Error loading image area.</div>
-                                        ) : designDetailsData ? (
-                                            <ModalImageViewer filePath={selectedVariation?.file_path} />
-                                        ) : (
-                                            <div>No image data.</div>
-                                        )}
-                                   </div>
-                               </div>
-                               
-                               {/* Right Side (Details & Comments) */} 
-                               <aside className="border-l overflow-y-auto flex flex-col">
-                                   {isLoadingDesignDetails ? (
-                                       <div className="p-4 text-center"><Loader2 className="h-6 w-6 animate-spin inline-block" /></div>
-                                   ) : errorDesignDetails ? (
-                                       <div className="p-4 text-red-600">Error loading sidebar.</div>
-                                   ) : designDetailsData ? (
-                                       <div className="flex-grow flex flex-col"> {/* Allow comments to grow */} 
-                                           {/* Details Section */} 
-                                           <div className="p-4 border-b shrink-0"> {/* Keep details fixed */} 
-                                                <h4 className="text-base font-semibold mb-2">Details</h4>
-                                                <p className="text-xs text-muted-foreground mb-1">Status:</p>
-                                                <Badge variant={selectedVariation?.status === 'Rejected' ? 'destructive' : 'secondary'} className="mb-4">
-                                                     {selectedVariation?.status || 'N/A'}
-                                                </Badge>
-                                                {/* Add other details here if needed */} 
-                                           </div>
+                                                 {/* --- UPDATED: Variation Status Update Buttons --- */}
+                                                 {/* Reduced margin/padding to mt-2/pt-2 */}
+                                                 <div className="mt-2 border-t pt-2">
+                                                      {/* Reduced margin to mb-1 */}
+                                                      <h5 className="text-xs font-semibold mb-1 text-muted-foreground uppercase">Update Variation Status</h5>
+                                                      <div className="flex flex-row items-center gap-2">
+                                                          {/* Approve Button */}
+                                                          <Button 
+                                                              variant="default" 
+                                                              // size="sm" // Removed size
+                                                              className="bg-green-600 hover:bg-green-700 text-primary-foreground h-auto py-1 px-2 text-xs" // Reinstated explicit sizing
+                                                              title="Approve this variation" 
+                                                              onClick={() => {
+                                                                  updateVariationDetailsMutation.mutate({ 
+                                                                      status: VariationFeedbackStatus.Approved 
+                                                                  });
+                                                              }}
+                                                              disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.Approved}
+                                                          >
+                                                              Approve
+                                                          </Button>
+                                                          {/* Needs Changes Button */}
+                                                          <Button 
+                                                              variant="default" 
+                                                              // size="sm" // Removed size
+                                                              className="bg-orange-500 hover:bg-orange-600 text-primary-foreground h-auto py-1 px-2 text-xs" // Reinstated explicit sizing
+                                                              title="Request changes for this variation" 
+                                                              onClick={() => {
+                                                                  updateVariationDetailsMutation.mutate({ 
+                                                                      status: VariationFeedbackStatus.NeedsChanges 
+                                                                  });
+                                                              }}
+                                                              disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.NeedsChanges}
+                                                          >
+                                                              Changes {/* Shorter Label */}
+                                                          </Button>
+                                                          {/* Request Feedback Button */}
+                                                          <Button 
+                                                              variant="secondary" 
+                                                              // size="sm" // Removed size
+                                                              className="h-auto py-1 px-2 text-xs" // Reinstated explicit sizing
+                                                              title="Set status to Pending Feedback" 
+                                                              onClick={() => {
+                                                                  updateVariationDetailsMutation.mutate({ 
+                                                                      status: VariationFeedbackStatus.PendingFeedback 
+                                                                  });
+                                                              }}
+                                                              disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.PendingFeedback}
+                                                          >
+                                                              Feedback {/* Shorter Label */}
+                                                          </Button>
+                                                          {/* Reject Button */}
+                                                          <Button 
+                                                              variant="destructive" 
+                                                              // size="sm" // Removed size
+                                                              className="h-auto py-1 px-2 text-xs" // Reinstated explicit sizing
+                                                              title="Reject this variation" 
+                                                              onClick={() => {
+                                                                  updateVariationDetailsMutation.mutate({ 
+                                                                      status: VariationFeedbackStatus.Rejected 
+                                                                  });
+                                                              }}
+                                                              disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.Rejected}
+                                                          >
+                                                              Reject
+                                                          </Button>
+                                                          {/* Loader */}
+                                                          {updateVariationDetailsMutation.isPending && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground self-center" />} 
+                                                      </div>
+                                                 </div>
+                                                 {/* --- End Variation Status Buttons --- */}
+                                            </div>
 
-                                           {/* Comments Panel Placeholder */} 
-                                           <div className="p-4 flex-grow bg-gray-50"> {/* Comments take remaining space */} 
-                                               <h4 className="text-base font-semibold mb-2">Comments</h4>
-                                               <p className="text-muted-foreground text-sm">Comments Panel Placeholder</p>
-                                               {/* TODO: Add Comments Implementation */}
-                                           </div>
-                                       </div>
-                                   ) : (
-                                       <div className="p-4">No details available.</div>
-                                   )}
-                               </aside>
-                           </div>
-                       </DialogContent>
-                   </DialogPortal>
+                                            {/* Comments Panel */}
+                                            {/* Reduced padding to p-2 */}
+                                            <div className="p-2 flex-grow flex flex-col bg-gray-50 overflow-hidden"> 
+                                                {/* Reduced margin to mb-1 */}
+                                                <h4 className="text-base font-semibold mb-1 shrink-0">Comments</h4>
+                                                {/* Reduced margin to mb-2 */}
+                                                <div className="flex-grow overflow-y-auto mb-2 border-t border-b -mx-2 px-2"> {/* Adjusted negative margin */}
+                                                    {isLoadingComments ? (
+                                                        <div className="flex justify-center items-center h-full">
+                                                            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                                                        </div>
+                                                    ) : errorComments ? (
+                                                        <div className="text-center text-red-500 py-4">Error loading comments.</div>
+                                                    ) : commentsData && commentsData.length > 0 ? (
+                                                        commentsData.map((comment) => (
+                                                            <CommentCard key={comment.id} comment={comment} />
+                                                        ))
+                                                    ) : (
+                                                        <p className="text-sm text-muted-foreground italic text-center py-4">No comments yet.</p>
+                                                    )}
+                                                </div>
+                                                {/* Comment Input Area */} 
+                                                <div className="mt-auto shrink-0"> 
+                                                     <Textarea 
+                                                         placeholder="Add your comment..." 
+                                                         className="mb-2" 
+                                                         value={newCommentText} 
+                                                         onChange={(e) => setNewCommentText(e.target.value)} 
+                                                         rows={3}
+                                                     />
+                                                     <Button 
+                                                         size="sm" 
+                                                         onClick={() => {
+                                                             if (newCommentText.trim()) {
+                                                                 addCommentMutation.mutate(newCommentText, {
+                                                                      onSuccess: () => setNewCommentText('') // Clear input on success
+                                                                 });
+                                                             } else {
+                                                                 toast.info("Comment cannot be empty.");
+                                                             }
+                                                         }}
+                                                         disabled={!currentVariationId || addCommentMutation.isPending} // Disable if no variation or pending
+                                                     >
+                                                         {addCommentMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null} Send
+                                                     </Button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="p-4">No details available.</div>
+                                    )}
+                                </aside>
+                            </div>
+                        </DialogContent>
+                    </DialogPortal>
                 </Dialog>
             </main>
         </div>

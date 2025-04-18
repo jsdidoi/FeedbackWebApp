@@ -79,7 +79,7 @@ export const ModalImageViewer = ({ filePath }: ModalImageViewerProps) => {
           fill
           sizes="(max-width: 768px) 100vw, (max-width: 1280px) 50vw, 33vw" // Adjust sizes based on modal width
           style={{ objectFit: 'contain' }} // Use 'contain' to see the whole image
-          unoptimized
+          priority
           onError={() => setError("Failed to load image.")}
         />
       ) : (
