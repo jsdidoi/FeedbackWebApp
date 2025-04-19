@@ -1,15 +1,21 @@
 // webapp/types/models.ts
 
 // --- Project Types ---
-export type ProjectStatus = 'Pending' | 'In Progress' | 'In Review' | 'Approved' | 'Needs Changes' | 'Completed' | 'Archived';
+export enum ProjectStatus {
+    Active = 'Active',
+    OnHold = 'On Hold',
+    Completed = 'Completed',
+    Cancelled = 'Cancelled'
+}
 
 export type Project = {
     id: string;
-    client_id: string | null;
+    created_at: string;
     name: string;
     description: string | null;
     status: ProjectStatus;
-    created_at: string;
+    is_archived: boolean;
+    client_id: string | null;
     updated_at: string;
     clients?: { id: string; name: string } | null; // Optional client relation
 };

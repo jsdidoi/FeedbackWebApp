@@ -6,7 +6,7 @@ import { useAuth } from '@/providers/AuthProvider';
 import { useParams, useRouter } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Badge } from "@/components/ui/badge";
-import { Loader2, PlusCircle, Pencil, Check, X, ChevronLeft, ChevronRight, Replace, RefreshCw, Trash2 } from 'lucide-react';
+import { Loader2, PlusCircle, Pencil, Check, X, ChevronLeft, ChevronRight, Replace, RefreshCw, Trash2, Archive } from 'lucide-react';
 import Link from 'next/link';
 import Breadcrumbs, { BreadcrumbItem } from '@/components/ui/breadcrumbs';
 import { Button } from '@/components/ui/button';
@@ -52,7 +52,8 @@ import {
     DesignOverallStatus, 
     DesignGridItem,
     VersionRoundStatus,
-    VariationFeedbackStatus
+    VariationFeedbackStatus,
+    ProjectStatus
 } from '@/types/models';
 import { ModalImageViewer } from '@/components/modal/ModalImageViewer';
 import {
@@ -64,6 +65,24 @@ import {
 } from "@/components/ui/select";
 import { Comment } from '@/types/models';
 import { CommentCard } from '@/components/cards/CommentCard';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { 
+    Tooltip, 
+    TooltipContent,
+    TooltipProvider, // Needed to wrap the provider around the list
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 // For Upload Queue
 interface UploadingFileInfo {
@@ -118,11 +137,11 @@ const fetchProject = async (supabase: any, projectId: string): Promise<Project |
 };
 
 // NEW: Fetch all projects for the sidebar
-const fetchAllProjects = async (supabase: any): Promise<Pick<Project, 'id' | 'name' | 'status'>[]> => {
+const fetchAllProjects = async (supabase: any): Promise<Pick<Project, 'id' | 'name' | 'status' | 'is_archived'>[]> => {
     if (!supabase) return [];
     const { data, error } = await supabase
         .from('projects')
-        .select('id, name, status') // Select only needed fields
+        .select('id, name, status, is_archived') // Added is_archived
         .order('name', { ascending: true }); // Order alphabetically
 
     if (error) {
@@ -212,6 +231,56 @@ const fetchCommentsForVariation = async (supabase: any, variationId: string | nu
         ...comment, 
         profiles: comment.profiles || null 
     })) || [];
+};
+
+// --- NEW: Add Project Hook ---
+const useAddProject = () => {
+    // No longer need user here for client_id
+    const { supabase } = useAuth(); 
+    const queryClient = useQueryClient();
+
+    // Define form data type (matching schema below) PLUS client_id
+    type NewProjectData = {
+        name: string;
+        description?: string | null;
+        client_id: string; // Added client_id
+    };
+
+    return useMutation({ 
+        // Expect the full object including client_id now
+        mutationFn: async (newProjectData: NewProjectData) => { 
+            if (!supabase) throw new Error("Supabase client not available");
+            // No longer need user check here for client_id
+
+            const insertData = {
+                name: newProjectData.name,
+                description: newProjectData.description,
+                status: ProjectStatus.Active, // Default new projects to Active
+                client_id: newProjectData.client_id // Use the provided client_id
+            };
+
+            const { data, error } = await supabase
+                .from('projects')
+                .insert(insertData)
+                .select()
+                .single();
+
+            if (error) {
+                console.error('Error adding project:', error);
+                throw new Error(`Failed to add project: ${error.message}`);
+            }
+            return data; // Return the newly created project
+        },
+        onSuccess: (data) => {
+            toast.success(`Project "${data.name}" added successfully!`);
+            // Invalidate the query for the sidebar list
+            queryClient.invalidateQueries({ queryKey: ['projects', 'all'] }); 
+            // Maybe redirect to the new project?
+        },
+        onError: (error) => {
+            toast.error(error.message);
+        },
+    });
 };
 
 // --- Add Design Hook ---
@@ -519,29 +588,163 @@ const useUpdateVariationDetails = (variationId: string, designId: string, projec
     });
 };
 
+// --- NEW: Hook to Update Design Details (e.g., Name) ---
+const useUpdateDesignDetails = (projectId: string | null) => { // Accept projectId
+    const { supabase } = useAuth();
+    const queryClient = useQueryClient();
+
+    return useMutation({ 
+        mutationFn: async ({ designId, name }: { designId: string, name: string }) => { // Expect designId here
+            if (!supabase) throw new Error("Supabase client not available");
+            // designId is now passed in mutate, no need to check hook arg
+            // if (!designId) throw new Error("Cannot update design: Design ID is missing.");
+            if (!name?.trim()) throw new Error("Design name cannot be empty");
+
+            const updateData = {
+                name: name.trim(),
+                updated_at: new Date().toISOString(),
+            };
+
+            const { data, error } = await supabase
+                .from('designs') 
+                .update(updateData)
+                .eq('id', designId)
+                .select()
+                .single();
+
+            if (error) {
+                console.error('Error updating design details:', error);
+                throw new Error(`Failed to update design name: ${error.message}`);
+            }
+            return data; // Returns the updated design object
+        },
+        onSuccess: (updatedDesign, variables) => {
+            // variables = { designId, name }
+            toast.success(`Design name updated to "${updatedDesign.name}"`);
+            // Invalidate queries to refresh UI
+            queryClient.invalidateQueries({ queryKey: ['designDetails', variables.designId] }); // Invalidate specific details if modal is open
+            if (projectId) {
+                queryClient.invalidateQueries({ queryKey: ['designs', projectId] }); // Invalidate the grid
+            }
+        },
+        onError: (error) => {
+            toast.error(error.message); // Handled by the hook
+        },
+    });
+};
+
+// --- NEW: Hook to Delete a Design (Calls Assumed Backend Function) ---
+const useDeleteDesign = (projectId: string | null) => {
+    const { supabase } = useAuth();
+    const queryClient = useQueryClient();
+
+    return useMutation({ 
+        mutationFn: async (designId: string) => {
+            if (!supabase) throw new Error("Supabase client not available");
+            if (!designId) throw new Error("Cannot delete design: Design ID is missing.");
+
+            // Call the backend function (replace 'delete_design_cascade' if needed)
+            const { error } = await supabase.rpc('delete_design_cascade', { 
+                p_design_id: designId 
+            });
+
+            if (error) {
+                console.error('Error calling delete_design_cascade RPC:', error);
+                throw new Error(`Failed to delete design: ${error.message}`);
+            }
+            
+            // Return the deleted ID for potential optimistic updates
+            return { designId }; 
+        },
+        onSuccess: (data, variables) => {
+            // variables = designId passed to mutate
+            toast.success(`Design deleted successfully!`);
+            // Invalidate the designs grid query to remove the card
+            if (projectId) {
+                queryClient.invalidateQueries({ queryKey: ['designs', projectId] });
+            }
+            // Optionally, you could remove the item optimistically from the query cache
+            // queryClient.setQueryData(['designs', projectId], (oldData: DesignGridItem[] | undefined) => 
+            //     oldData ? oldData.filter(d => d.id !== variables) : []
+            // );
+        },
+        onError: (error) => {
+            toast.error(error.message); // Handled by the hook
+        },
+    });
+};
+
+// --- NEW: Hook to Delete a Project (Calls Assumed Backend Function) ---
+const useDeleteProject = () => { // Doesn't need projectId initially
+    const { supabase } = useAuth();
+    const queryClient = useQueryClient();
+
+    return useMutation({ 
+        mutationFn: async (projectId: string) => {
+            if (!supabase) throw new Error("Supabase client not available");
+            if (!projectId) throw new Error("Cannot delete project: Project ID is missing.");
+
+            // Call the backend function (replace 'delete_project_cascade' if needed)
+            const { error } = await supabase.rpc('delete_project_cascade', { 
+                p_project_id: projectId 
+            });
+
+            if (error) {
+                console.error('Error calling delete_project_cascade RPC:', error);
+                throw new Error(`Failed to delete project: ${error.message}`);
+            }
+            
+            // Return the deleted ID for potential UI updates/redirects
+            return { projectId }; 
+        },
+        onSuccess: (data, variables) => {
+            // variables = projectId passed to mutate
+            toast.success(`Project deleted successfully!`);
+            // Invalidate the 'all projects' query to update the sidebar
+            queryClient.invalidateQueries({ queryKey: ['projects', 'all'] });
+            // Note: The current project query ['project', variables] is now invalid,
+            // but invalidating it might cause errors if the component tries to refetch deleted data.
+            // We'll handle redirecting away from the deleted project in the component.
+        },
+        onError: (error) => {
+            toast.error(error.message); // Handled by the hook
+        },
+    });
+};
+
 // --- Update Project Details Hook ---
-const useUpdateProjectDetails = (projectId: string) => {
+const useUpdateProjectDetails = (projectId: string | null) => {
     const { supabase } = useAuth();
     const queryClient = useQueryClient();
 
     return useMutation({
-        mutationFn: async ({ name, description }: { name: string, description: string | null }) => {
+        mutationFn: async ({ name, description, status }: { name?: string, description?: string | null, status?: string }) => {
             if (!supabase) throw new Error("Supabase client not available");
             if (!projectId) throw new Error("Project ID is required");
-            if (!name?.trim()) throw new Error("Project name cannot be empty");
+            // Removed name check, as we might only be updating status/description
+            // if (!name?.trim()) throw new Error("Project name cannot be empty"); 
 
-            const updateData: { name: string, description?: string | null, updated_at: string } = {
-                name: name.trim(),
+            // Build update object conditionally
+            const updateData: { name?: string, description?: string | null, status?: string, updated_at: string } = {
                 updated_at: new Date().toISOString()
             };
-            if (description !== undefined) {
-                updateData.description = description;
+            if (name !== undefined) updateData.name = name.trim();
+            if (description !== undefined) updateData.description = description; // Already handles null
+            if (status !== undefined) updateData.status = status;
+
+            // Check if there's anything to update besides timestamp
+            if (Object.keys(updateData).length <= 1) {
+                 console.warn("No project details provided for update besides timestamp.");
+                 // Optionally throw an error or return early?
+                 // For archiving, we expect status, so this shouldn't be hit.
+                 // Let's allow just updating the timestamp if needed.
+                 // throw new Error("No details provided for update.");
             }
 
             const { data, error } = await supabase
-                .from('projects') // Target projects table
+                .from('projects') 
                 .update(updateData)
-                .eq('id', projectId) // Use projectId
+                .eq('id', projectId)
                 .select()
                 .single();
 
@@ -550,6 +753,49 @@ const useUpdateProjectDetails = (projectId: string) => {
                 throw new Error(`Failed to update project details: ${error?.message || JSON.stringify(error)}`);
             }
             return data;
+        },
+        onError: (error) => {
+            toast.error(error.message);
+        },
+    });
+};
+
+// --- NEW: Hook to Set Project Archived Status --- 
+const useSetProjectArchivedStatus = () => {
+    const { supabase } = useAuth();
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async ({ projectId, is_archived }: { projectId: string, is_archived: boolean }) => {
+            if (!supabase) throw new Error("Supabase client not available");
+            if (!projectId) throw new Error("Project ID is required");
+
+            const updateData = {
+                is_archived: is_archived,
+                updated_at: new Date().toISOString(),
+            };
+
+            const { data, error } = await supabase
+                .from('projects')
+                .update(updateData)
+                .eq('id', projectId)
+                .select('id, name, is_archived') // Select fields needed for toast/invalidation
+                .single();
+
+            if (error) {
+                console.error('Full Supabase Set Archived Status Error:', error);
+                throw new Error(`Failed to update project archived status: ${error?.message || JSON.stringify(error)}`);
+            }
+            return data;
+        },
+        onSuccess: (updatedProject) => {
+            // Display toast based on whether it was archived or unarchived
+            const action = updatedProject.is_archived ? 'archived' : 'unarchived';
+            toast.success(`Project "${updatedProject.name}" ${action}.`);
+            // Invalidate the 'all projects' query to refresh sidebar lists
+            queryClient.invalidateQueries({ queryKey: ['projects', 'all'] });
+            // Also invalidate the specific project details if it happens to be selected
+            queryClient.invalidateQueries({ queryKey: ['project', updatedProject.id] });
         },
         onError: (error) => {
             toast.error(error.message);
@@ -1026,6 +1272,17 @@ export default function ProjectsOverviewPage() {
     const [currentVariationId, setCurrentVariationId] = useState<string | null>(null);
     // NEW: State for comment input
     const [newCommentText, setNewCommentText] = useState('');
+    // NEW: State for inline title editing
+    const [isEditingTitle, setIsEditingTitle] = useState(false);
+    const [editableTitle, setEditableTitle] = useState('');
+    // NEW: State for inline description editing
+    const [isEditingDescription, setIsEditingDescription] = useState(false);
+    const [editableDescription, setEditableDescription] = useState<string | null>(null);
+    // NEW: State for inline MODAL title editing
+    const [isEditingModalTitle, setIsEditingModalTitle] = useState(false);
+    const [editableModalTitle, setEditableModalTitle] = useState('');
+    // NEW: State for Add Project Dialog
+    const [isAddProjectDialogOpen, setIsAddProjectDialogOpen] = useState(false);
 
     // --- Refs for hidden file inputs ---
     const addVersionFileInputRef = useRef<HTMLInputElement>(null);
@@ -1043,12 +1300,35 @@ export default function ProjectsOverviewPage() {
         defaultValues: { name: '' },
     });
 
+    // --- NEW: Zod Schema for Add Project Form ---
+    const addProjectSchema = z.object({
+        name: z.string().min(1, 'Project name is required'),
+        description: z.string().optional().nullable(), // Optional description
+    });
+
+    // --- NEW: Form Hook for Add Project Dialog ---
+    const {
+        register: registerAddProject,
+        handleSubmit: handleSubmitAddProject,
+        reset: resetAddProjectForm,
+        formState: { errors: addProjectFormErrors },
+    } = useForm<z.infer<typeof addProjectSchema>>({
+        resolver: zodResolver(addProjectSchema),
+        defaultValues: { name: '', description: '' },
+    });
+
     // --- Queries ---
-    const { data: allProjects, isLoading: isLoadingAllProjects, error: errorAllProjects } = useQuery<Pick<Project, 'id' | 'name' | 'status'>[]>({ 
+    // Updated type annotation to include is_archived
+    const { data: allProjectsData, isLoading: isLoadingAllProjects, error: errorAllProjects } = useQuery<Pick<Project, 'id' | 'name' | 'status' | 'is_archived'>[]>({ 
         queryKey: ['projects', 'all'],
         queryFn: () => fetchAllProjects(supabase),
         enabled: !!supabase,
     });
+
+    // Filter projects into active and archived lists
+    const activeProjects = allProjectsData?.filter(p => !p.is_archived) || [];
+    const archivedProjects = allProjectsData?.filter(p => p.is_archived) || [];
+
     const { data: selectedProjectDetails, isLoading: isLoadingSelectedProject } = useQuery<Project | null>({
         queryKey: ['project', selectedProjectId],
         queryFn: () => fetchProject(supabase, selectedProjectId!),
@@ -1089,13 +1369,13 @@ export default function ProjectsOverviewPage() {
 
     // Effect to handle initial project selection based on URL or first project
     useEffect(() => {
-        if (!selectedProjectId && !isLoadingAllProjects && allProjects && allProjects.length > 0) {
+        if (!selectedProjectId && !isLoadingAllProjects && allProjectsData && allProjectsData.length > 0) {
             // If no project selected (and not loading projects) and projects exist,
             // select the one from URL if valid, otherwise select the first project in the list.
-            const projectFromUrl = allProjects.find(p => p.id === initialProjectId);
-            setSelectedProjectId(projectFromUrl ? projectFromUrl.id : allProjects[0].id);
+            const projectFromUrl = allProjectsData.find(p => p.id === initialProjectId);
+            setSelectedProjectId(projectFromUrl ? projectFromUrl.id : allProjectsData[0].id);
         }
-    }, [selectedProjectId, isLoadingAllProjects, allProjects, initialProjectId]);
+    }, [selectedProjectId, isLoadingAllProjects, allProjectsData, initialProjectId]);
 
     // Effect to set initial/default version/variation when modal data loads
     useEffect(() => {
@@ -1178,6 +1458,17 @@ export default function ProjectsOverviewPage() {
         selectedDesignIdForModal || '',
         selectedProjectId || null // Pass the currently selected projectId
     );
+
+    // NEW: Instantiate design details update hook
+    const updateDesignDetailsMutation = useUpdateDesignDetails(selectedProjectId);
+    // NEW: Instantiate design delete hook
+    const deleteDesignMutation = useDeleteDesign(selectedProjectId);
+    // NEW: Instantiate project delete hook
+    const deleteProjectMutation = useDeleteProject();
+    // NEW: Instantiate add project hook
+    const addProjectMutation = useAddProject();
+    // NEW: Instantiate set archived status hook
+    const setProjectArchivedStatusMutation = useSetProjectArchivedStatus();
 
     // --- Handlers ---
     const handleSelectProject = (projectId: string) => {
@@ -1379,6 +1670,224 @@ export default function ProjectsOverviewPage() {
         }
     };
 
+    // --- NEW: Handlers for Title Editing ---
+    const handleEditTitleClick = () => {
+        if (selectedProjectDetails) {
+            setEditableTitle(selectedProjectDetails.name);
+            setIsEditingTitle(true);
+        }
+    };
+
+    const handleCancelEditTitle = () => {
+        setIsEditingTitle(false);
+        // No need to reset editableTitle, it will be set on next edit click
+    };
+
+    const handleSaveTitle = () => {
+        if (!editableTitle.trim()) {
+            toast.error("Project name cannot be empty.");
+            return;
+        }
+        if (!selectedProjectDetails) {
+            toast.error("Cannot save: Project details not loaded.");
+            return;
+        }
+
+        updateProjectDetailsMutation.mutate(
+            { 
+                name: editableTitle.trim(), 
+                description: selectedProjectDetails.description // Preserve existing description 
+            },
+            {
+                onSuccess: (updatedProject) => {
+                    toast.success(`Project name updated to "${updatedProject.name}"`);
+                    setIsEditingTitle(false);
+                    // Invalidate project query to refetch updated details
+                    queryClient.invalidateQueries({ queryKey: ['project', selectedProjectId] });
+                    // Also invalidate the 'all projects' query for the sidebar
+                    queryClient.invalidateQueries({ queryKey: ['projects', 'all'] });
+                },
+                onError: (error) => {
+                    // Error toast is handled by the mutation hook itself
+                    console.error("Failed to save title:", error);
+                },
+            }
+        );
+    };
+
+    // --- NEW: Handlers for Description Editing ---
+    const handleEditDescriptionClick = () => {
+        setIsEditingDescription(true);
+        // Provide null fallback if project details are missing
+        setEditableDescription(selectedProjectDetails?.description ?? null);
+    };
+
+    const handleCancelEditDescription = () => {
+        setIsEditingDescription(false);
+        setEditableDescription(null);
+    };
+
+    const handleSaveDescription = () => {
+        if (!editableDescription?.trim()) {
+            toast.error("Project description cannot be empty.");
+            return;
+        }
+        if (!selectedProjectDetails) {
+            toast.error("Cannot save: Project details not loaded.");
+            return;
+        }
+
+        updateProjectDetailsMutation.mutate(
+            { 
+                name: selectedProjectDetails.name, 
+                description: editableDescription.trim()
+            },
+            {
+                onSuccess: (updatedProject) => {
+                    toast.success(`Project description updated to "${updatedProject.description}"`);
+                    setIsEditingDescription(false);
+                    // Invalidate project query to refetch updated details
+                    queryClient.invalidateQueries({ queryKey: ['project', selectedProjectId] });
+                    // Also invalidate the 'all projects' query for the sidebar
+                    queryClient.invalidateQueries({ queryKey: ['projects', 'all'] });
+                },
+                onError: (error) => {
+                    // Error toast is handled by the mutation hook itself
+                    console.error("Failed to save description:", error);
+                },
+            }
+        );
+    };
+
+    // --- NEW: Handler for saving design name (passed to DesignCard) ---
+    const handleSaveDesignName = (designId: string, newName: string) => {
+        updateDesignDetailsMutation.mutate({ designId, name: newName });
+        // Invalidation is handled within the hook's onSuccess
+    };
+
+    // --- NEW: Handlers for Modal Title Inline Editing ---
+    const handleDoubleClickModalTitle = () => {
+        if (designDetailsData) {
+            setEditableModalTitle(designDetailsData.name);
+            setIsEditingModalTitle(true);
+        }
+    };
+
+    const handleCancelEditModalTitle = () => {
+        setIsEditingModalTitle(false);
+        // No need to reset editableModalTitle
+    };
+
+    const handleSaveModalTitle = () => {
+        if (!editableModalTitle.trim()) {
+            toast.error("Design name cannot be empty.");
+            return;
+        }
+        if (!selectedDesignIdForModal) {
+            toast.error("Cannot save: Design ID not available.");
+            return;
+        }
+
+        // Use the same mutation hook as the card edit
+        updateDesignDetailsMutation.mutate(
+            { 
+                designId: selectedDesignIdForModal, // Pass the correct design ID
+                name: editableModalTitle.trim()
+            },
+            {
+                onSuccess: (updatedDesign) => {
+                    // Toast and invalidation are handled by the hook's onSuccess
+                    setIsEditingModalTitle(false); // Turn off edit mode on success
+                },
+                onError: (error) => {
+                    // Error toast is handled by the mutation hook
+                    console.error("Failed to save modal title:", error);
+                    // Optionally turn off edit mode on error too?
+                    // setIsEditingModalTitle(false);
+                },
+            }
+        );
+    };
+
+    // --- NEW: Handler for deleting a design (passed to DesignCard) ---
+    const handleDeleteDesign = (designId: string) => {
+        // Confirmation is handled within the DesignCard's AlertDialog
+        deleteDesignMutation.mutate(designId);
+    };
+
+    // --- Handler for Archiving --- 
+    const handleArchiveProject = () => {
+        if (!selectedProjectDetails) return;
+        // Use the new mutation to set is_archived to true
+        // Confirmation is still useful here
+        if (window.confirm(`Are you sure you want to archive the project "${selectedProjectDetails.name}"?`)) {
+            setProjectArchivedStatusMutation.mutate(
+                { projectId: selectedProjectDetails.id, is_archived: true },
+                {
+                    onSuccess: (updatedProject) => {
+                        // Toast is handled by the hook's onSuccess
+                        // Invalidation is also handled by the hook
+                        // No need to invalidate project query here, hook does it.
+                        // queryClient.invalidateQueries({ queryKey: ['project', selectedProjectId] }); 
+                        // queryClient.invalidateQueries({ queryKey: ['projects', 'all'] }); 
+                        // TODO: Potentially redirect or change view if current project is archived
+                        // Might want to select the next available active project? Or just show a message.
+                        if (selectedProjectId === updatedProject.id) {
+                            // Find the next available active project to select, or null
+                            const nextActiveProject = activeProjects.find(p => p.id !== updatedProject.id);
+                            setSelectedProjectId(nextActiveProject?.id || null);
+                            // If no active projects left, maybe navigate away?
+                            // if (!nextActiveProject) router.push('/projects');
+                        }
+                    },
+                    // onError handled by hook
+                }
+            );
+        }
+    };
+
+    // --- NEW: Handler for Deleting Project ---
+    const handleDeleteProject = () => {
+        if (!selectedProjectId) return;
+        // Confirmation is handled by the AlertDialog, this is the final action
+        deleteProjectMutation.mutate(selectedProjectId, {
+            onSuccess: () => {
+                // Redirect after successful deletion
+                toast.info("Project deleted. Redirecting to projects list...");
+                router.push('/projects'); // Redirect to the main projects page
+            },
+            // onError handled by hook
+        });
+    };
+
+    // --- NEW: Handler for Add Project form submission ---
+    const handleAddNewProjectSubmit = (values: z.infer<typeof addProjectSchema>) => {
+        // Get client_id from the currently selected project's details
+        const currentClientId = selectedProjectDetails?.client_id;
+
+        if (!currentClientId) {
+            toast.error("Cannot add project: Client context is missing. Please ensure a project is selected.");
+            return;
+        }
+
+        // Combine form values with the determined client_id
+        const projectData = {
+            ...values,
+            client_id: currentClientId,
+        };
+
+        addProjectMutation.mutate(projectData, {
+            onSuccess: (newProject) => {
+                resetAddProjectForm(); // Reset form
+                setIsAddProjectDialogOpen(false); // Close dialog
+                // Optionally, navigate to the new project
+                // router.push(`/projects/${newProject.id}`); 
+                // setSelectedProjectId(newProject.id); // Select it in the sidebar
+            }
+            // onError handled by hook
+        });
+    };
+
     // --- Render ---
     if (isLoadingAllProjects) {
         return <div className="flex justify-center items-center h-screen"><Loader2 className="h-8 w-8 animate-spin" /> Loading Projects...</div>;
@@ -1398,33 +1907,225 @@ export default function ProjectsOverviewPage() {
         <div className="container mx-auto p-4 flex gap-6"> 
             {/* --- Sidebar --- */}
             <aside className="w-64 flex-shrink-0 border-r pr-6"> 
-                 <h2 className="text-xl font-semibold mb-4">Projects</h2>
-                 <nav className="space-y-1">
-                     {allProjects?.map((project) => (
-                         <button
-                            key={project.id}
-                            onClick={() => handleSelectProject(project.id)}
-                            className={cn(
-                                "w-full text-left px-3 py-2 rounded-md text-sm font-medium flex justify-between items-center",
-                                selectedProjectId === project.id
-                                    ? 'bg-muted text-primary' 
-                                    : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground'
-                            )}
-                        >
-                            <span>{project.name}</span>
-                            <Badge variant={selectedProjectId === project.id ? "default" : "outline"} className="text-xs">{project.status}</Badge>
-                        </button>
-                     ))}
-                     {(!allProjects || allProjects.length === 0) && (
-                        <p className="text-sm text-muted-foreground italic">No projects found.</p>
+                 {/* Add flex container for title and button */}
+                 <div className="flex justify-between items-center mb-4">
+                     <h2 className="text-xl font-semibold">Projects</h2>
+                     {/* Add Project Dialog */}
+                     <Dialog open={isAddProjectDialogOpen} onOpenChange={setIsAddProjectDialogOpen}>
+                        <DialogTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-6 w-6" title="Add New Project">
+                                <PlusCircle className="h-4 w-4" />
+                            </Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                            <DialogHeader>
+                                <DialogTitle>Add New Project</DialogTitle>
+                                <DialogDescription>Enter details for the new project.</DialogDescription>
+                            </DialogHeader>
+                            <form onSubmit={handleSubmitAddProject(handleAddNewProjectSubmit)} className="space-y-4">
+                                <div className="space-y-1">
+                                    <Label htmlFor="projectName">Project Name</Label>
+                                    <Input id="projectName" {...registerAddProject("name")} />
+                                    {addProjectFormErrors.name && <p className="text-xs text-red-600">{addProjectFormErrors.name.message}</p>}
+                                </div>
+                                <div className="space-y-1">
+                                    <Label htmlFor="projectDescription">Description (Optional)</Label>
+                                    <Textarea id="projectDescription" {...registerAddProject("description")} rows={3}/>
+                                    {/* No error display needed for optional field */} 
+                                </div>
+                                <DialogFooter>
+                                    <DialogClose asChild>
+                                        <Button type="button" variant="outline" onClick={() => resetAddProjectForm()}>Cancel</Button>
+                                    </DialogClose>
+                                    <Button type="submit" disabled={addProjectMutation.isPending}>
+                                        {addProjectMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null} Create Project
+                                    </Button>
+                                </DialogFooter>
+                            </form>
+                        </DialogContent>
+                    </Dialog>
+                 </div>
+                 {/* --- Active Projects List --- */}
+                 <nav className="space-y-1 mb-4"> {/* Add margin-bottom */}
+                     {activeProjects.map((project) => (
+                       // Replace the entire return block for each active project
+                       <TooltipProvider key={project.id} delayDuration={300}>
+                         <Tooltip>
+                           <div className="group flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium hover:bg-muted/50">
+                             {/* Button contains trigger and badge */}
+                             <button
+                                 onClick={() => handleSelectProject(project.id)}
+                                 className={cn(
+                                     "flex items-center mr-2 w-full overflow-hidden text-left", 
+                                     selectedProjectId === project.id
+                                         ? 'text-primary' 
+                                         : 'text-muted-foreground hover:text-foreground'
+                                 )}
+                             >
+                               <TooltipTrigger asChild>
+                                 {/* Apply line-clamp here */}
+                                 <span className="flex-grow mr-2 line-clamp-2">{project.name}</span>
+                               </TooltipTrigger>
+                               <Badge variant={selectedProjectId === project.id ? "default" : "outline"} className="text-xs ml-auto flex-shrink-0">{project.status}</Badge>
+                             </button>
+                 
+                             {/* Action Buttons */}
+                             <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                               {/* Archive Button */}
+                               <Button 
+                                   variant="ghost" 
+                                   size="icon" 
+                                   className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                                   title="Archive Project"
+                                   onClick={(e) => {
+                                       e.stopPropagation(); // Prevent selecting project
+                                       setProjectArchivedStatusMutation.mutate({ projectId: project.id, is_archived: true });
+                                   }}
+                                   disabled={setProjectArchivedStatusMutation.isPending}
+                               >
+                                   <Archive className="h-3 w-3" />
+                               </Button>
+                               {/* Delete Button */}
+                               <AlertDialog>
+                                   <AlertDialogTrigger asChild>
+                                       <Button 
+                                           variant="ghost" 
+                                           size="icon" 
+                                           className="h-5 w-5 text-destructive hover:text-destructive/80"
+                                           title="Delete Project"
+                                           onClick={(e) => e.stopPropagation()} // Prevent selecting project
+                                           disabled={deleteProjectMutation.isPending}
+                                       >
+                                           <Trash2 className="h-3 w-3" />
+                                       </Button>
+                                   </AlertDialogTrigger>
+                                   <AlertDialogContent onClick={(e) => e.stopPropagation()}> 
+                                       <AlertDialogHeader>
+                                           <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                                           <AlertDialogDescription>
+                                               Permanently delete project "{project.name}"? This cannot be undone.
+                                           </AlertDialogDescription>
+                                       </AlertDialogHeader>
+                                       <AlertDialogFooter>
+                                           <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                           <AlertDialogAction 
+                                               onClick={() => deleteProjectMutation.mutate(project.id)}
+                                               className="bg-destructive hover:bg-destructive/90"
+                                           >
+                                               Delete
+                                           </AlertDialogAction>
+                                       </AlertDialogFooter>
+                                   </AlertDialogContent>
+                               </AlertDialog>
+                             </div>
+                           </div>
+                           {/* Tooltip Content is outside the main div */}
+                           <TooltipContent side="bottom" align="start">
+                             <p>{project.name}</p>
+                           </TooltipContent>
+                         </Tooltip>
+                       </TooltipProvider>
+                     )) /* End of activeProjects.map */}
+                     {(!activeProjects || activeProjects.length === 0) && (
+                         <p className="text-sm text-muted-foreground italic">No active projects found.</p>
                      )}
                  </nav>
-             </aside>
+                 {/* --- Archived Projects Collapsible Section --- */}
+                 {archivedProjects.length > 0 && (
+                     <Collapsible>
+                         <CollapsibleTrigger className="flex justify-between items-center w-full text-sm font-medium text-muted-foreground hover:text-foreground mb-2 group">
+                             Archived Projects ({archivedProjects.length})
+                             <ChevronRight className="h-4 w-4 transform transition-transform duration-200 group-data-[state=open]:rotate-90" />
+                         </CollapsibleTrigger>
+                         <CollapsibleContent>
+                              <nav className="space-y-1 border-t pt-2">
+                                  {archivedProjects.map((project) => (
+                                    // Ensure this block is the direct return value of the map function
+                                    <TooltipProvider key={project.id} delayDuration={300}>
+                                      <Tooltip>
+                                        <div className="group flex items-center justify-between w-full text-left px-3 py-2 rounded-md text-sm font-medium hover:bg-muted/50">
+                                          {/* Button contains trigger and badge */}
+                                          <button
+                                              onClick={() => handleSelectProject(project.id)}
+                                              className={cn(
+                                                  "flex items-center mr-2 w-full overflow-hidden text-left text-muted-foreground italic", 
+                                                  selectedProjectId === project.id ? 'text-primary' : 'hover:text-foreground' 
+                                              )}
+                                          >
+                                            <TooltipTrigger asChild>
+                                              {/* Apply line-clamp here */}
+                                              <span className="flex-grow mr-2 line-clamp-2">{project.name}</span>
+                                            </TooltipTrigger>
+                                            <Badge variant={selectedProjectId === project.id ? "default" : "outline"} className="text-xs ml-auto flex-shrink-0">{project.status}</Badge>
+                                          </button>
+                                
+                                          {/* Action Buttons */}
+                                          <div className="flex items-center opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                                            {/* Unarchive Button */}
+                                            <Button 
+                                                variant="ghost" 
+                                                size="icon" 
+                                                className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                                                title="Unarchive Project"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setProjectArchivedStatusMutation.mutate({ projectId: project.id, is_archived: false });
+                                                }}
+                                                disabled={setProjectArchivedStatusMutation.isPending}
+                                            >
+                                                <RefreshCw className="h-3 w-3" /> 
+                                            </Button>
+                                            {/* Delete Button */}
+                                            <AlertDialog>
+                                                <AlertDialogTrigger asChild>
+                                                    <Button 
+                                                        variant="ghost" 
+                                                        size="icon" 
+                                                        className="h-5 w-5 text-destructive hover:text-destructive/80"
+                                                        title="Delete Project"
+                                                        onClick={(e) => e.stopPropagation()}
+                                                        disabled={deleteProjectMutation.isPending}
+                                                    >
+                                                        <Trash2 className="h-3 w-3" />
+                                                    </Button>
+                                                </AlertDialogTrigger>
+                                                  <AlertDialogContent onClick={(e) => e.stopPropagation()}> 
+                                                     <AlertDialogHeader>
+                                                         <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                                                         <AlertDialogDescription>
+                                                             Permanently delete project "{project.name}"? This cannot be undone.
+                                                         </AlertDialogDescription>
+                                                     </AlertDialogHeader>
+                                                     <AlertDialogFooter>
+                                                         <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                                         <AlertDialogAction 
+                                                             onClick={() => deleteProjectMutation.mutate(project.id)}
+                                                             className="bg-destructive hover:bg-destructive/90"
+                                                         >
+                                                             Delete
+                                                         </AlertDialogAction>
+                                                     </AlertDialogFooter>
+                                                 </AlertDialogContent>
+                                             </AlertDialog>
+                                          </div>
+                                        </div>
+                                        {/* Tooltip Content is outside the main div */}
+                                        <TooltipContent side="bottom" align="start">
+                                          <p>{project.name}</p>
+                                        </TooltipContent>
+                                      </Tooltip>
+                                    </TooltipProvider>
+                                  )) /* End of archivedProjects.map */}
+                              </nav>
+                         </CollapsibleContent>
+                     </Collapsible>
+                 )}
+                 </aside>
 
             {/* --- Main Content Area --- */}
             <main className="flex-grow min-w-0"> 
-                 <Breadcrumbs items={breadcrumbItems} />
-                 
+            <Breadcrumbs items={breadcrumbItems} /> 
+
                 {!selectedProjectId ? (
                     <div className="mt-6 text-center text-muted-foreground">Select a project to view details.</div>
                 ) : isLoadingSelectedProject || isLoadingDesigns ? (
@@ -1434,10 +2135,113 @@ export default function ProjectsOverviewPage() {
                 ) : selectedProjectDetails ? (
                      <> 
                         <div className="flex justify-between items-center mb-6 mt-4">
-                            <h1 className="text-3xl font-bold">{selectedProjectDetails.name}</h1>
+                            {/* --- Conditional Title / Edit Input --- */}
+                            {isEditingTitle ? (
+                                <div className="flex items-center gap-2 flex-grow">
+                                <Input 
+                                        value={editableTitle}
+                                        onChange={(e) => setEditableTitle(e.target.value)}
+                                        className="text-3xl font-bold h-auto p-0 border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none flex-grow" // Adjusted styles
+                                        aria-label="Project Title Input"
+                                        onKeyDown={(e) => { if (e.key === 'Enter') handleSaveTitle(); if (e.key === 'Escape') handleCancelEditTitle(); }}
+                                    />
+                                    <Button variant="ghost" size="icon" onClick={handleSaveTitle} disabled={updateProjectDetailsMutation.isPending} title="Save Title">
+                                        {updateProjectDetailsMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                                    </Button>
+                                    <Button variant="ghost" size="icon" onClick={handleCancelEditTitle} disabled={updateProjectDetailsMutation.isPending} title="Cancel Edit">
+                                        <X className="h-4 w-4" />
+                                    </Button>
                         </div>
-                        <p className="text-muted-foreground mb-2">Status: <Badge variant="secondary">{selectedProjectDetails.status}</Badge></p>
-                        <p className="mb-6">{selectedProjectDetails.description || <span className="italic text-muted-foreground">No description.</span>}</p>
+                            ) : (
+                        <div className="flex items-center gap-2">
+                                    <h1 className="text-3xl font-bold">{selectedProjectDetails.name}</h1>
+                                    <Button variant="ghost" size="icon" onClick={handleEditTitleClick} title="Edit Title">
+                                    <Pencil className="h-4 w-4" />
+                                </Button>
+                                </div>
+                            )}
+                            {/* --- End Conditional Title --- */}
+
+                            {/* REMOVED: Redundant Action Buttons Area (Archive/Delete) */}
+                            {/* The functionality is now handled by hover buttons in the sidebar */}
+                        </div>
+
+                        {/* Display Status with Clickable Badges */}
+                        <div className="flex items-center gap-2 mb-4">
+                            <p className="text-muted-foreground mr-1">Status:</p>
+                            {Object.values(ProjectStatus).map((status) => {
+                                const isSelected = selectedProjectDetails.status === status;
+                                return (
+                                    <Button
+                                        key={status}
+                                        variant="outline" // Use outline as base, override with bg color
+                                        className={cn(
+                                            "h-6 px-2 text-xs rounded-full border", // Base badge-like styles
+                                            // Default Colors - Update for Cancelled
+                                            status === ProjectStatus.Active && !isSelected && "bg-green-100 text-green-800 border-green-200 hover:bg-green-200",
+                                            status === ProjectStatus.OnHold && !isSelected && "bg-yellow-100 text-yellow-800 border-yellow-200 hover:bg-yellow-200",
+                                            status === ProjectStatus.Completed && !isSelected && "bg-blue-100 text-blue-800 border-blue-200 hover:bg-blue-200",
+                                            status === ProjectStatus.Cancelled && !isSelected && "bg-gray-100 text-gray-800 border-gray-200 hover:bg-gray-200", // Changed from Archived
+                                            // Selected Colors - Update for Cancelled
+                                            status === ProjectStatus.Active && isSelected && "bg-green-600 text-white ring-2 ring-green-500 ring-offset-1",
+                                            status === ProjectStatus.OnHold && isSelected && "bg-yellow-500 text-white ring-2 ring-yellow-400 ring-offset-1",
+                                            status === ProjectStatus.Completed && isSelected && "bg-blue-600 text-white ring-2 ring-blue-500 ring-offset-1",
+                                            status === ProjectStatus.Cancelled && isSelected && "bg-gray-600 text-white ring-2 ring-gray-500 ring-offset-1", // Changed from Archived
+                                            // Disabled state
+                                            updateProjectDetailsMutation.isPending && "opacity-50 cursor-not-allowed"
+                                        )}
+                                        onClick={() => {
+                                            if (!isSelected) { // Only mutate if clicking a different status
+                                                updateProjectDetailsMutation.mutate(
+                                                    { status: status as ProjectStatus },
+                                                    {
+                                                        onSuccess: (updatedProject) => {
+                                                            toast.success(`Project status updated to "${updatedProject.status}"`);
+                                                            queryClient.invalidateQueries({ queryKey: ['project', selectedProjectId] });
+                                                            queryClient.invalidateQueries({ queryKey: ['projects', 'all'] });
+                                                        },
+                                                        // onError handled by hook
+                                                    }
+                                                );
+                                            }
+                                        }}
+                                        disabled={updateProjectDetailsMutation.isPending}
+                                    >
+                                        {status} 
+                                    </Button>
+                                );
+                            })}
+                            {/* Show loader next to buttons if updating */}
+                            {updateProjectDetailsMutation.isPending && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground ml-2" />}
+                        </div>
+                        {/* --- Conditional Description / Edit Textarea --- */}
+                        {isEditingDescription ? (
+                            <div className="mb-6 space-y-2">
+                        <Textarea
+                                    value={editableDescription ?? ''}
+                                    onChange={(e) => setEditableDescription(e.target.value)}
+                            placeholder="Enter project description..."
+                                    rows={4} // Adjust rows as needed
+                                    aria-label="Project Description Input"
+                                />
+                                <div className="flex items-center gap-2 justify-end">
+                                    <Button variant="ghost" size="sm" onClick={handleSaveDescription} disabled={updateProjectDetailsMutation.isPending} title="Save Description">
+                                        {updateProjectDetailsMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null} Save
+                                    </Button>
+                                    <Button variant="ghost" size="sm" onClick={handleCancelEditDescription} disabled={updateProjectDetailsMutation.isPending} title="Cancel Edit">
+                                        Cancel
+                                    </Button>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="mb-6 flex items-start gap-2"> {/* Use flex to align icon */} 
+                                <p className="flex-grow">{selectedProjectDetails.description || <span className="italic text-muted-foreground">No description.</span>}</p>
+                                <Button variant="ghost" size="icon" onClick={handleEditDescriptionClick} title="Edit Description" className="shrink-0">
+                                    <Pencil className="h-4 w-4" />
+                                </Button>
+                            </div>
+                        )}
+                        {/* --- End Conditional Description --- */}
 
                         <Card className="mb-6">
                             <CardHeader>
@@ -1492,8 +2296,9 @@ export default function ProjectsOverviewPage() {
                                     <DesignCard 
                                         key={design.id} 
                                         design={design} 
-                                        // onClick now opens modal
                                         onClick={() => handleDesignClick(design.id)} 
+                                        onSaveName={handleSaveDesignName}
+                                        onDelete={handleDeleteDesign} // Pass delete handler
                                     />
                                 ))}
                              </div>
@@ -1539,11 +2344,38 @@ export default function ProjectsOverviewPage() {
                         <DialogContent className="p-0 h-[90vh] flex flex-col w-full max-w-full sm:max-w-[95vw] xl:max-w-screen-xl"> {/* Wider max-width */} 
                             <DialogHeader className="p-4 border-b shrink-0 flex flex-row justify-between items-center"> {/* Keep Header Flex */} 
                                 {/* Wrap Title ONLY */} 
-                                <div className="flex items-center gap-4"> 
-                                     <DialogTitle>{designDetailsData?.name || 'Loading Design...'}</DialogTitle>
+                                <div className="flex items-center gap-4 flex-grow mr-4"> {/* Allow title area to grow */} 
+                                    {/* --- Conditional Modal Title / Edit Input --- */}
+                                    {isEditingModalTitle ? (
+                                        <div className="flex items-center gap-2 flex-grow">
+                                            <Input 
+                                                value={editableModalTitle}
+                                                onChange={(e) => setEditableModalTitle(e.target.value)}
+                                                className="text-lg font-semibold h-auto p-0 border-0 focus-visible:ring-0 focus-visible:ring-offset-0 shadow-none flex-grow" // Adjusted styles for modal title
+                                                aria-label="Design Title Input"
+                                                autoFocus // Focus input when it appears
+                                                onKeyDown={(e) => { if (e.key === 'Enter') handleSaveModalTitle(); if (e.key === 'Escape') handleCancelEditModalTitle(); }}
+                                            />
+                                            <Button variant="ghost" size="icon" onClick={handleSaveModalTitle} disabled={updateDesignDetailsMutation.isPending} title="Save Title">
+                                                {updateDesignDetailsMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                                            </Button>
+                                            <Button variant="ghost" size="icon" onClick={handleCancelEditModalTitle} disabled={updateDesignDetailsMutation.isPending} title="Cancel Edit">
+                                                <X className="h-4 w-4" />
+                                            </Button>
+        </div>
+                                    ) : (
+                                        <DialogTitle 
+                                            className="cursor-pointer hover:bg-muted/50 px-1 rounded-sm" // Add visual cue for double click
+                                            onDoubleClick={handleDoubleClickModalTitle} 
+                                            title="Double-click to edit name"
+                                        >
+                                            {designDetailsData?.name || 'Loading Design...'}
+                                        </DialogTitle>
+                                    )}
+                                     {/* --- End Conditional Modal Title --- */}
                                      <DialogDescription className="sr-only">View and manage design versions and variations.</DialogDescription>
                                 </div>
-                                {/* Close button will implicitly be pushed right */} 
+                                {/* Close button will implicitly be pushed right (by flex-grow on title container) */} 
                             </DialogHeader>
                             
                             {/* Main Content Area - Grid for Image/Nav(Left) and Comments(Right) */} 
