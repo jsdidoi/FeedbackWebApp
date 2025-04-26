@@ -152,6 +152,28 @@ const fetchProject = async (supabase: any, projectId: string): Promise<Project |
     return data as Project | null;
 };
 
+// NEW: Fetch users for @mentions
+const fetchMentionableUsers = async (supabase: any): Promise<{ id: string; display_name: string; }[]> => {
+    if (!supabase) return [];
+
+    const { data, error } = await supabase
+        .from('profiles')
+        .select('id, display_name')
+        .order('display_name', { ascending: true });
+
+    if (error) {
+        console.error("Error fetching mentionable users:", error);
+        // Return empty array on error, or throw if preferred
+        return []; 
+    }
+    // Ensure display_name is not null/undefined, provide fallback if needed
+    // Add type for user parameter in map
+    return (data || []).map((user: { id: string; display_name: string | null }) => ({
+        ...user,
+        display_name: user.display_name || 'Unknown User'
+    })); 
+};
+
 // NEW: Fetch all projects for the sidebar
 const fetchAllProjects = async (supabase: any): Promise<Pick<Project, 'id' | 'name' | 'status' | 'is_archived'>[]> => {
     if (!supabase) return [];
@@ -773,6 +795,12 @@ export default function ProjectsOverviewPage() {
     const commentInputRef = useRef<HTMLTextAreaElement>(null);
     // NEW: State for comment attachments
     const [selectedAttachmentFiles, setSelectedAttachmentFiles] = useState<File[]>([]);
+    // NEW: State for @mentions
+    const [mentionQuery, setMentionQuery] = useState<string>('');
+    const [mentionableUsers, setMentionableUsers] = useState<{ id: string; display_name: string; }[]>([]);
+    const [isMentionDropdownOpen, setIsMentionDropdownOpen] = useState<boolean>(false);
+    const [mentionDropdownPosition, setMentionDropdownPosition] = useState<{ top: number; left: number } | null>(null);
+    const [isFetchingMentions, setIsFetchingMentions] = useState<boolean>(false);
 
     // --- Refs for hidden file inputs ---
     const addVersionFileInputRef = useRef<HTMLInputElement>(null);
@@ -1535,6 +1563,87 @@ export default function ProjectsOverviewPage() {
         { label: 'Projects', href: '/projects' }, 
         ...(selectedProjectDetails ? [{ label: selectedProjectDetails.name }] : []) 
     ];
+
+    // --- NEW: @Mention Logic --- 
+    const triggerMentionFetch = async (query: string) => {
+        setIsFetchingMentions(true);
+        console.log("[Mentions] Fetching users for query:", query);
+        const users = await fetchMentionableUsers(supabase);
+        // Basic filter - can be improved later (e.g., fuzzy search)
+        const filteredUsers = users.filter(u => 
+            u.display_name.toLowerCase().includes(query.toLowerCase())
+        );
+        setMentionableUsers(filteredUsers);
+        setIsFetchingMentions(false);
+        // Only open dropdown if results found (or maybe always open if query exists?)
+        setIsMentionDropdownOpen(filteredUsers.length > 0 || query.length > 0); 
+        // TODO: Calculate dropdown position based on cursor
+        // For now, just log
+        console.log("[Mentions] Found users:", filteredUsers);
+        const textarea = commentInputRef.current;
+        if (textarea) {
+            // Placeholder for position calculation
+            // const { top, left } = textarea.getBoundingClientRect(); 
+            // const caretPosition = textarea.selectionStart;
+            // Calculate position based on caret - complex!
+            // setMentionDropdownPosition({ top: top + 20, left: left }); 
+            setMentionDropdownPosition({ top: 200, left: 200 }); // Dummy position for now
+        }
+    };
+
+    // NEW: Handler for comment input change (with @mention detection)
+    const handleCommentInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+        const value = e.target.value;
+        setNewCommentText(value);
+
+        const cursorPosition = e.target.selectionStart;
+        const textBeforeCursor = value.substring(0, cursorPosition);
+        const atMatch = textBeforeCursor.match(/@(\w*)$/); // Match '@' followed by word characters at the end
+
+        if (atMatch) {
+            const currentQuery = atMatch[1]; // The word after @
+            setMentionQuery(currentQuery);
+            triggerMentionFetch(currentQuery);
+        } else {
+            // If no @ match at cursor, close the dropdown
+            setIsMentionDropdownOpen(false);
+            setMentionQuery('');
+        }
+    };
+
+    // NEW: Handler for selecting a user from the mention dropdown
+    const handleMentionSelect = (displayName: string) => {
+        const textarea = commentInputRef.current;
+        if (!textarea) return;
+
+        const currentValue = textarea.value;
+        const cursorPosition = textarea.selectionStart;
+        const textBeforeCursor = currentValue.substring(0, cursorPosition);
+        
+        // Find the start of the @mention query we are replacing
+        const mentionStartIndex = textBeforeCursor.lastIndexOf('@');
+        
+        if (mentionStartIndex === -1) return; // Should not happen if dropdown is open
+
+        const textAfterCursor = currentValue.substring(cursorPosition);
+        const textBeforeMention = currentValue.substring(0, mentionStartIndex);
+        
+        // Construct the new text with the selected mention
+        const newText = `${textBeforeMention}@${displayName} ${textAfterCursor}`;
+        
+        setNewCommentText(newText);
+        setIsMentionDropdownOpen(false); // Close dropdown
+        setMentionQuery(''); // Clear query
+
+        // Set cursor position after the inserted mention + space
+        const newCursorPosition = mentionStartIndex + 1 + displayName.length + 1;
+        
+        // Refocus and set cursor - needs slight delay to work after state update
+        setTimeout(() => {
+            textarea.focus();
+            textarea.setSelectionRange(newCursorPosition, newCursorPosition);
+        }, 0);
+    };
 
     return (
         <div className="container mx-auto p-4 flex gap-6"> 
@@ -2383,22 +2492,57 @@ export default function ProjectsOverviewPage() {
                                                 </div>
                                     {/* Input Area - Add px-4 and pb-2 */}
                                     <div className="shrink-0 bg-gray-50 pt-2 px-4 pb-2">
-                                        <Textarea ref={commentInputRef} placeholder={replyingToCommentId ? "Write your reply..." : "Add your comment..."} className="mb-2" value={newCommentText} onChange={(e) => setNewCommentText(e.target.value)} rows={3} />
-                                                     {selectedAttachmentFiles.length > 0 && (
-                                                       <div className="mb-2 space-y-1">
-                                                           <p className="text-xs font-medium text-muted-foreground">Selected files:</p>
-                                            <ul className="list-none p-0 m-0 max-h-20 overflow-y-auto">
-                                                               {selectedAttachmentFiles.map((file, index) => (
-                                                                   <li key={index} className="flex items-center justify-between text-xs bg-muted/50 px-2 py-1 rounded-md">
-                                                                       <span className="truncate mr-2">{file.name}</span>
-                                                  <Button variant="ghost" size="icon" className="h-4 w-4 text-muted-foreground hover:text-destructive shrink-0" onClick={() => handleRemoveSelectedAttachment(file)} title="Remove file">
-                                                                           <XCircle className="h-3 w-3" />
-                                                                       </Button>
-                                                                   </li>
-                                                               ))}
-                                                           </ul>
-                                                       </div>
-                                                     )}
+                                        <Textarea 
+                                            ref={commentInputRef} 
+                                            placeholder={replyingToCommentId ? "Write your reply..." : "Add your comment..."} 
+                                            className="mb-2" 
+                                            value={newCommentText} 
+                                            // onChange={(e) => setNewCommentText(e.target.value)}
+                                            onChange={handleCommentInputChange} // NEW: Use dedicated handler
+                                            rows={3} 
+                                        />
+                                         {/* --- NEW: @Mention Dropdown --- */}
+                                        {isMentionDropdownOpen && mentionDropdownPosition && (
+                                            <div 
+                                                className="absolute z-20 w-48 bg-background border rounded-md shadow-lg max-h-40 overflow-y-auto"
+                                                style={{ 
+                                                    top: `${mentionDropdownPosition.top}px`, 
+                                                    left: `${mentionDropdownPosition.left}px` 
+                                                }}
+                                            >
+                                                {isFetchingMentions ? (
+                                                    <div className="p-2 text-sm text-muted-foreground italic">Loading...</div>
+                                                ) : mentionableUsers.length > 0 ? (
+                                                    mentionableUsers.map(user => (
+                                                        <button 
+                                                            key={user.id} 
+                                                            className="block w-full text-left px-3 py-1.5 text-sm hover:bg-muted"
+                                                            onClick={() => handleMentionSelect(user.display_name)}
+                                                        >
+                                                            {user.display_name}
+                                                        </button>
+                                                    ))
+                                                ) : (
+                                                    <div className="p-2 text-sm text-muted-foreground italic">No users found</div>
+                                                )}
+                                            </div>
+                                        )}
+                                         {/* --- End @Mention Dropdown --- */}
+                                         {selectedAttachmentFiles.length > 0 && (
+                                            <div className="mb-2 space-y-1">
+                                                <p className="text-xs font-medium text-muted-foreground">Selected files:</p>
+                                                <ul className="list-none p-0 m-0 max-h-20 overflow-y-auto">
+                                                    {selectedAttachmentFiles.map((file, index) => (
+                                                        <li key={index} className="flex items-center justify-between text-xs bg-muted/50 px-2 py-1 rounded-md">
+                                                            <span className="truncate mr-2">{file.name}</span>
+                                                            <Button variant="ghost" size="icon" className="h-4 w-4 text-muted-foreground hover:text-destructive shrink-0" onClick={() => handleRemoveSelectedAttachment(file)} title="Remove file">
+                                                                <XCircle className="h-3 w-3" />
+                                                            </Button>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                         )}
                                                      <div className="flex items-center justify-end gap-2">
                                           <input type="file" ref={commentAttachmentInputRef} onChange={handleCommentAttachmentFilesSelected} multiple className="hidden" />
                                           <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" title="Attach files" type="button" onClick={() => commentAttachmentInputRef.current?.click()}>
