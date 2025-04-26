@@ -6,7 +6,7 @@ import { useAuth } from '@/providers/AuthProvider';
 import { useParams, useRouter } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Badge } from "@/components/ui/badge";
-import { Loader2, PlusCircle, Pencil, Check, X, ChevronLeft, ChevronRight, Replace, RefreshCw, Trash2, Archive, Paperclip, XCircle, ChevronDown } from 'lucide-react';
+import { Loader2, PlusCircle, Pencil, Check, X, ChevronLeft, ChevronRight, Replace, RefreshCw, Trash2, Archive, Paperclip, XCircle, ChevronDown, Clock } from 'lucide-react';
 import Link from 'next/link';
 import Breadcrumbs, { BreadcrumbItem } from '@/components/ui/breadcrumbs';
 import { Button } from '@/components/ui/button';
@@ -359,15 +359,19 @@ const useCreateDesignFromUpload = (
             if (!supabase) throw new Error("Supabase client not available");
             if (!projectId) throw new Error("Project ID is required");
 
-            // Rename variables to avoid conflict
+            // Mark as uploading immediately
+            setUploadQueue(prev => prev.map(f => 
+                f.id === fileId ? { ...f, status: 'uploading', progress: 0, uploadStarted: true } : f
+            ));
+
             let createdDesignId = '';
             let createdVersionId = '';
             let createdVariationId = '';
             let finalFilePath = '';
+            const bucketName = 'design-variations';
 
             try {
                 // --- 1. Create Design --- 
-                // Use filename without extension as initial design name
                 const designName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
                 const { data: newDesign, error: designError } = await supabase
                     .from('designs')
@@ -406,22 +410,80 @@ const useCreateDesignFromUpload = (
                 createdVariationId = newVariation.id;
                 console.log(`[CreateDesignUpload] Created Variation: ${createdVariationId} (A)`);
 
-                // --- 4. Upload File --- 
+                // --- 4. Upload File using XHR --- 
                 finalFilePath = `projects/${projectId}/designs/${createdDesignId}/versions/${createdVersionId}/variations/${createdVariationId}/${file.name}`;
-                const bucketName = 'design-variations';
-                
                 console.log(`[CreateDesignUpload] Attempting upload to: ${finalFilePath}`);
-                const { error: uploadError } = await supabase.storage
+
+                // Get signed URL for PUT upload
+                const { data: signedUrlData, error: signedUrlError } = await supabase.storage
                     .from(bucketName)
-                    .upload(finalFilePath, file, { upsert: true }); // Use direct upload here
+                  .createSignedUploadUrl(finalFilePath);
 
-                if (uploadError) {
-                     console.error(`[CreateDesignUpload] Upload failed for ${file.name}:`, uploadError);
-                     throw new Error(`Storage upload failed: ${uploadError.message}`);
+                if (signedUrlError) {
+                  console.error("[CreateDesignUpload] Failed to get signed upload URL:", signedUrlError);
+                  throw new Error(`Failed to get signed upload URL: ${signedUrlError.message}`);
                 }
-                console.log(`[CreateDesignUpload] Successfully uploaded ${file.name} to ${finalFilePath}`);
 
-                // --- 5. Update Variation with File Path --- 
+                if (!signedUrlData?.signedUrl) {
+                  throw new Error("Failed to get signed upload URL, no URL returned.");
+                }
+
+                const signedUrl = signedUrlData.signedUrl;
+
+                // Use a Promise to handle XHR async nature within the async mutationFn
+                await new Promise<void>((resolve, reject) => {
+                  const xhr = new XMLHttpRequest();
+                  
+                  // Find the item in the queue to potentially store the xhr reference for cancellation
+                  setUploadQueue(prev => prev.map(f => f.id === fileId ? { ...f, xhr: xhr } : f));
+
+                  xhr.open('PUT', signedUrl, true);
+                  // Set headers required by Supabase signed URL uploads
+                  // Often, it needs Content-Type. Refer to Supabase docs if other headers are needed.
+                  xhr.setRequestHeader('Content-Type', file.type);
+                  // xhr.setRequestHeader('x-upsert', 'true'); // If needed, check Supabase docs
+
+                  xhr.upload.onprogress = (event) => {
+                    if (event.lengthComputable) {
+                      const progress = Math.round((event.loaded / event.total) * 100);
+                      setUploadQueue(prev => prev.map(f => 
+                        f.id === fileId ? { ...f, progress: progress, status: 'uploading' } : f
+                      ));
+                    }
+                  };
+
+                  xhr.onload = () => {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                      console.log(`[CreateDesignUpload] XHR Upload successful for ${file.name}`);
+                      // Don't update state to 'success' here, let onSuccess callback handle removal
+                      resolve();
+                    } else {
+                      console.error(`[CreateDesignUpload] XHR Upload failed for ${file.name}: Status ${xhr.status}`, xhr.responseText);
+                      reject(new Error(`Storage upload failed: ${xhr.statusText || 'XHR Error'}`));
+                    }
+                  };
+
+                  xhr.onerror = () => {
+                    console.error(`[CreateDesignUpload] XHR Upload error for ${file.name}`);
+                    reject(new Error('Storage upload failed: Network error'));
+                  };
+
+                  xhr.onabort = () => {
+                    console.log(`[CreateDesignUpload] XHR Upload aborted for ${file.name}`);
+                    // No need to reject here, cancellation is handled elsewhere potentially
+                    // but we need to update the status
+                    setUploadQueue(prev => prev.map(f => 
+                        f.id === fileId ? { ...f, status: 'cancelled', progress: 0 } : f
+                    ));
+                    // We resolve here because the mutation itself shouldn't fail on abort,
+                    // but the state is updated.
+                    resolve(); 
+                  };
+
+                  xhr.send(file);
+                });
+                
+                // --- 5. Update Variation with File Path (only if XHR succeeded) --- 
                 const { error: updateError } = await supabase
                     .from('variations')
                     .update({ file_path: finalFilePath })
@@ -438,12 +500,15 @@ const useCreateDesignFromUpload = (
 
             } catch (error: any) {
                  console.error(`[CreateDesignUpload] CRITICAL FAILURE for file ${file.name}:`, error);
+                // Update queue status on failure
+                setUploadQueue(prev => prev.map(f => 
+                    f.id === fileId ? { ...f, status: 'error', error: error.message || 'Upload failed', progress: 0 } : f
+                ));
                 // Cleanup hints using created IDs
                 if (createdDesignId) console.error(`[Cleanup Hint] May need to clean up design: ${createdDesignId}`);
                 if (createdVersionId) console.error(`[Cleanup Hint] May need to clean up version: ${createdVersionId}`);
                 if (createdVariationId) console.error(`[Cleanup Hint] May need to clean up variation: ${createdVariationId}`);
-                // Add the fileId to the re-thrown error context? Maybe not necessary.
-                 throw error;
+                 throw error; // Re-throw to trigger onError callback
             }
         },
         onSuccess: (data, variables) => {
@@ -541,7 +606,7 @@ const useUpdateProjectDetails = (projectId: string) => {
             toast.success(message);
 
             // Invalidate queries to refetch updated data
-            queryClient.invalidateQueries({ queryKey: ['project', variables.projectId] }); // Specific project details
+            queryClient.invalidateQueries({ queryKey: ['project', selectedProjectId] }); // Specific project details
             queryClient.invalidateQueries({ queryKey: ['projects', 'all'] }); // List for sidebar
         },
         onError: (error) => {
@@ -1022,9 +1087,30 @@ export default function ProjectsOverviewPage() {
         [selectedProjectId, createDesignFromUploadMutation] 
     );
 
-    // ... (Keep other handlers: handleCancelUpload, startUpload, handleProjectEditClick, handleProjectCancelClick, handleProjectSaveClick)
-     const handleCancelUpload = (id: string) => { /* TODO */ };
+    // --- Implement Cancel Upload Handler ---
+    const handleCancelUpload = (id: string) => {
+        setUploadQueue(prevQueue => {
+            const itemToCancel = prevQueue.find(item => item.id === id);
+            if (itemToCancel && itemToCancel.xhr) {
+                console.log(`[CancelUpload] Aborting upload for file ID: ${id}`);
+                itemToCancel.xhr.abort(); // Trigger the onabort handler in XHR
+                // The onabort handler in the XHR logic updates the state
+                return prevQueue; // Return original queue, onabort will trigger re-render
+            } else {
+                console.warn(`[CancelUpload] Could not find item or XHR to cancel for ID: ${id}`);
+                // If no XHR, update state directly to cancelled
+                return prevQueue.map(item => 
+                    item.id === id && (item.status === 'uploading' || item.status === 'pending') 
+                        ? { ...item, status: 'cancelled', progress: 0, xhr: undefined } 
+                        : item
+                );
+            }
+        });
+    };
+
      const startUpload = (id: string) => { /* TODO */ };
+
+   
      const handleProjectEditClick = () => { /* TODO */ };
      const handleProjectCancelClick = () => { /* TODO */ };
      const handleProjectSaveClick = () => { /* TODO */ };
@@ -1204,7 +1290,7 @@ export default function ProjectsOverviewPage() {
                 description: selectedProjectDetails.description // Preserve existing description 
             },
             {
-                onSuccess: (updatedProject) => {
+                onSuccess: (updatedProject: Project) => {
                     toast.success(`Project name updated to "${updatedProject.name}"`);
                     setIsEditingTitle(false);
                     // Invalidate project query to refetch updated details
@@ -1212,7 +1298,7 @@ export default function ProjectsOverviewPage() {
                     // Also invalidate the 'all projects' query for the sidebar
                     queryClient.invalidateQueries({ queryKey: ['projects', 'all'] });
                 },
-                onError: (error) => {
+                onError: (error: Error) => {
                     // Error toast is handled by the mutation hook itself
                     console.error("Failed to save title:", error);
                 },
@@ -1248,15 +1334,15 @@ export default function ProjectsOverviewPage() {
                 description: editableDescription.trim()
             },
             {
-                onSuccess: (updatedProject) => {
+                onSuccess: (updatedProject: Project) => {
                     toast.success(`Project description updated to "${updatedProject.description}"`);
                     setIsEditingDescription(false);
                     // Invalidate project query to refetch updated details
-                    queryClient.invalidateQueries({ queryKey: ['project', selectedProjectId] });
+                    queryClient.invalidateQueries({ queryKey: ['project', selectedProjectId] }); // Revert back to selectedProjectId
                     // Also invalidate the 'all projects' query for the sidebar
                     queryClient.invalidateQueries({ queryKey: ['projects', 'all'] });
                 },
-                onError: (error) => {
+                onError: (error: Error) => {
                     // Error toast is handled by the mutation hook itself
                     console.error("Failed to save description:", error);
                 },
@@ -1329,7 +1415,7 @@ export default function ProjectsOverviewPage() {
             setProjectArchivedStatusMutation.mutate(
                 { projectId: selectedProjectDetails.id, is_archived: true },
                 {
-                    onSuccess: (updatedProject) => {
+                    onSuccess: (updatedProject: Project) => {
                         // Toast is handled by the hook's onSuccess
                         // Invalidation is also handled by the hook
                         // No need to invalidate project query here, hook does it.
@@ -1732,7 +1818,7 @@ export default function ProjectsOverviewPage() {
                                                 updateProjectDetailsMutation.mutate(
                                                     { status: status as ProjectStatus },
                                                     {
-                                                        onSuccess: (updatedProject) => {
+                                                        onSuccess: (updatedProject: Project) => {
                                                             toast.success(`Project status updated to "${updatedProject.status}"`);
                                                             queryClient.invalidateQueries({ queryKey: ['project', selectedProjectId] });
                                                             queryClient.invalidateQueries({ queryKey: ['projects', 'all'] });
@@ -1787,9 +1873,41 @@ export default function ProjectsOverviewPage() {
                 </CardHeader>
                 <CardContent>
                                 <Dropzone onFilesAccepted={handleDrop} /> 
+                  {/* Render Upload Queue Items */}
+                  <div className="mt-4 space-y-2">
                                 {uploadQueue.map(item => (
-                                    <div key={item.id}>...display file item...</div>
-                                ))}
+                      <div key={item.id} className="flex items-center gap-3 p-2 border rounded-md bg-muted/30">
+                        <img src={item.previewUrl} alt={item.file.name} className="h-10 w-10 object-cover rounded" />
+                        <div className="flex-grow space-y-1">
+                          <p className="text-sm font-medium truncate">{item.file.name}</p>
+                          {item.status === 'uploading' && (
+                            <Progress value={item.progress} className="h-2" />
+                          )}
+                          {item.status === 'error' && (
+                            <p className="text-xs text-red-600">Error: {item.error || 'Upload failed'}</p>
+                          )}
+                          {item.status === 'cancelled' && (
+                            <p className="text-xs text-yellow-600">Cancelled</p>
+                          )}
+                          {item.status === 'pending' && (
+                             <p className="text-xs text-muted-foreground">Pending...</p>
+                          )}
+                        </div>
+                        {/* Add status icon based on state */}
+                        <div className="flex-shrink-0">
+                          {item.status === 'uploading' && (
+                            <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground" onClick={() => handleCancelUpload(item.id)} title="Cancel Upload">
+                              <XCircle className="h-4 w-4" />
+                            </Button>
+                          )}
+                          {item.status === 'error' && (
+                            <XCircle className="h-5 w-5 text-red-500" />
+                          )}
+                          {/* Add success checkmark if needed, though items are removed on success */}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </CardContent>
             </Card>
 
@@ -2066,27 +2184,156 @@ export default function ProjectsOverviewPage() {
                                             </div>
                                         </div>
                                         {/* --- End of Variation Section --- */} 
+
+                                        {/* --- NEW: Upload Queue (Inside Nav for Apply Stability) --- */}
+                                        {uploadQueue.length > 0 && (
+                                            <div className="mt-3 pt-3 border-t space-y-2 max-h-[20vh] overflow-y-auto">
+                                                {/* Enhanced Title showing queue status */}
+                                                <h4 className="text-sm font-medium text-muted-foreground px-1">
+                                                    Upload Queue ({uploadQueue.filter(f => f.status === 'success' || f.status === 'error' || f.status === 'cancelled').length}/{uploadQueue.length} processed)
+                                                </h4>
+                                                {uploadQueue.map(item => {
+                                                    // Determine more specific status text
+                                                    let statusText = 'Pending...';
+                                                    if (item.status === 'pending' && !item.uploadStarted) {
+                                                        statusText = 'Queued...';
+                                                    } else if (item.status === 'uploading') {
+                                                        statusText = `Uploading (${item.progress}%)`;
+                                                    } else if (item.status === 'error') {
+                                                        statusText = `Error: ${item.error || 'Upload failed'}`;
+                                                    } else if (item.status === 'cancelled') {
+                                                        statusText = 'Cancelled';
+                                                    } else if (item.status === 'success') {
+                                                        // Success items are removed, but handle just in case
+                                                        statusText = 'Success'; 
+                                                    }
+                                                    
+                                                    return (
+                                                        <div key={item.id} className="flex items-center gap-3 p-2 border rounded-md bg-background">
+                                                            <img src={item.previewUrl} alt={item.file.name} className="h-8 w-8 object-cover rounded flex-shrink-0" />
+                                                            <div className="flex-grow space-y-1 min-w-0">
+                                                                <p className="text-xs font-medium truncate" title={item.file.name}>{item.file.name}</p>
+                                                                {/* Display specific status text or progress bar */}
+                                                                {item.status === 'uploading' ? (
+                                                                    <Progress value={item.progress} className="h-1.5" />
+                                                                ) : (
+                                                                    <p className={cn(
+                                                                        "text-xs truncate",
+                                                                        item.status === 'error' && "text-red-600",
+                                                                        item.status === 'cancelled' && "text-yellow-600",
+                                                                        item.status === 'pending' && "text-muted-foreground"
+                                                                    )} title={statusText}>
+                                                                        {statusText}
+                                                                    </p>
+                                                                )}
+                                                            </div>
+                                                            <div className="flex-shrink-0">
+                                                                {item.status === 'uploading' && (
+                                                                    <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground" onClick={() => handleCancelUpload(item.id)} title="Cancel Upload">
+                                                                        <XCircle className="h-4 w-4" />
+                                             </Button>
+                                         )}
+                                                                {item.status === 'error' && (
+                                                                    <XCircle className="h-5 w-5 text-red-500" />
+                                                                )}
+                                                                {/* Add icon for queued? Maybe Clock? */}
+                                                                {item.status === 'pending' && !item.uploadStarted && (
+                                                                    <Clock className="h-4 w-4 text-muted-foreground" />
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+                                        {/* --- End Upload Queue --- */}
                                     </nav>
 
                                     {/* Image Viewer Area - Change padding from p-6 to p-8 */}
                                     <div className="p-8 flex items-start justify-center overflow-hidden h-full relative group/imageViewer">
-                                      <ModalImageViewer filePath={selectedVariation?.file_path} />
+                                        <ModalImageViewer filePath={selectedVariation?.file_path} />
+
+                                        {/* --- NEW: Hover Controls for Variation Management --- */}
+                                        {currentVariationId && (
+                                            <div className="absolute bottom-4 right-4 z-10 flex items-center gap-2 p-1 bg-background/80 backdrop-blur-sm rounded-md shadow-md opacity-0 group-hover/imageViewer:opacity-100 transition-opacity duration-200">
+                                                <TooltipProvider delayDuration={200}>
+                                                    {/* Replace Button */}
+                                                    <Tooltip>
+                                                        <TooltipTrigger asChild>
+                                                            <Button 
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="h-7 w-7"
+                                                                onClick={handleReplaceVariationClick}
+                                                                disabled={replaceVariationFileMutation.isPending}
+                                                            >
+                                                                {replaceVariationFileMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                                                            </Button>
+                                                        </TooltipTrigger>
+                                                        <TooltipContent side="top">
+                                                            <p>Replace File</p>
+                                                        </TooltipContent>
+                                                    </Tooltip>
+
+                                                    {/* Delete Button with Confirmation */}
+                                                    <Tooltip>
+                                                        <AlertDialog>
+                                                            <AlertDialogTrigger asChild>
+                                                                {/* Need TooltipTrigger *inside* AlertDialogTrigger for positioning */}
+                                                                <TooltipTrigger asChild>
+                                                                    <Button 
+                                                                        variant="ghost"
+                                                                        size="icon"
+                                                                        className="h-7 w-7 text-destructive hover:text-destructive/90"
+                                                                        disabled={deleteVariationMutation.isPending}
+                                                                        onClick={(e) => e.stopPropagation()} // Prevent triggering modal close maybe?
+                                                                    >
+                                                                        {deleteVariationMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                                                                    </Button>
+                                                                </TooltipTrigger>
+                                                            </AlertDialogTrigger>
+                                                            <AlertDialogContent>
+                                                                <AlertDialogHeader>
+                                                                    <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                                                                    <AlertDialogDescription>
+                                                                        This action cannot be undone. This will permanently delete variation {selectedVariation?.variation_letter || '?'} and its associated comments and file.
+                                                                    </AlertDialogDescription>
+                                                                </AlertDialogHeader>
+                                                                <AlertDialogFooter>
+                                                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                                                    <AlertDialogAction 
+                                                                        onClick={handleDeleteVariationClick} 
+                                                                        className="bg-destructive hover:bg-destructive/90"
+                                                                    >
+                                                                        Delete
+                                                                    </AlertDialogAction>
+                                                                </AlertDialogFooter>
+                                                            </AlertDialogContent>
+                                                        </AlertDialog>
+                                                        <TooltipContent side="top">
+                                                            <p>Delete Variation</p>
+                                                        </TooltipContent>
+                                                    </Tooltip>
+                                                </TooltipProvider>
+                                            </div>
+                                        )}
+                                        {/* --- End Hover Controls --- */}
                                     </div>
                                 </div>
                                 
                                 {/* Right Side (Details & Comments) */} 
                                 <aside className="border-l flex flex-col h-full min-h-0">
-                                    {/* Details Section */}
-                                    <div className="p-2 border-b shrink-0">
+                                            {/* Details Section */} 
+                                            <div className="p-2 border-b shrink-0"> 
                                         {/* Details content: status, badges, update buttons, etc. */}
-                                        <h4 className="text-base font-semibold mb-1">Details</h4>
-                                        <p className="text-xs text-muted-foreground mb-1">Variation Status:</p>
-                                        <Badge variant={selectedVariation?.status === 'Rejected' ? 'destructive' : 'secondary'} className="mb-2">
-                                          {selectedVariation?.status || 'N/A'}
-                                        </Badge>
-                                        <div className="mt-2 border-t pt-2">
-                                          <h5 className="text-xs font-semibold mb-1 text-muted-foreground uppercase">Update Variation Status</h5>
-                                          <div className="flex flex-row items-center gap-2">
+                                                 <h4 className="text-base font-semibold mb-1">Details</h4>
+                                                 <p className="text-xs text-muted-foreground mb-1">Variation Status:</p>
+                                                 <Badge variant={selectedVariation?.status === 'Rejected' ? 'destructive' : 'secondary'} className="mb-2">
+                                                      {selectedVariation?.status || 'N/A'}
+                                                 </Badge>
+                                                 <div className="mt-2 border-t pt-2">
+                                                      <h5 className="text-xs font-semibold mb-1 text-muted-foreground uppercase">Update Variation Status</h5>
+                                                      <div className="flex flex-row items-center gap-2">
                                             <Button variant="default" className="bg-green-600 hover:bg-green-700 text-primary-foreground h-auto py-1 px-2 text-xs" title="Approve this variation" onClick={() => { updateVariationDetailsMutation.mutate({ status: VariationFeedbackStatus.Approved }); }} disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.Approved}>Approve</Button>
                                             <Button variant="default" className="bg-orange-500 hover:bg-orange-600 text-primary-foreground h-auto py-1 px-2 text-xs" title="Request changes for this variation" onClick={() => { updateVariationDetailsMutation.mutate({ status: VariationFeedbackStatus.NeedsChanges }); }} disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.NeedsChanges}>Changes</Button>
                                             <Button variant="secondary" className="h-auto py-1 px-2 text-xs" title="Set status to Pending Feedback" onClick={() => { updateVariationDetailsMutation.mutate({ status: VariationFeedbackStatus.PendingFeedback }); }} disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.PendingFeedback}>Feedback</Button>
@@ -2094,61 +2341,64 @@ export default function ProjectsOverviewPage() {
                                             {updateVariationDetailsMutation.isPending && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground self-center" />}
                                           </div>
                                         </div>
+
+                                        
+
                                     </div>
                                     {/* Comments List */}
                                     <div className="flex-grow overflow-y-auto min-h-0 mb-2 border-b px-2 space-y-2 py-2">
-                                        {isLoadingComments ? (
-                                          <div className="flex justify-center items-center h-full">
-                                            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                                          </div>
-                                        ) : errorComments ? (
-                                          <div className="text-center text-red-500 py-4">Error loading comments.</div>
-                                        ) : commentsData && commentsData.length > 0 ? (
-                                          buildCommentTree(commentsData).map((rootComment) => (
-                                            <RenderCommentThread
-                                              key={rootComment.id}
-                                              comment={rootComment as Comment & { children: Comment[] }}
+                                                    {isLoadingComments ? (
+                                                        <div className="flex justify-center items-center h-full">
+                                                            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                                                        </div>
+                                                    ) : errorComments ? (
+                                                        <div className="text-center text-red-500 py-4">Error loading comments.</div>
+                                                    ) : commentsData && commentsData.length > 0 ? (
+                                          buildCommentTree(commentsData).map((rootComment: Comment & { children: Comment[] }) => (
+                                                            <RenderCommentThread
+                                                                key={rootComment.id}
+                                              comment={rootComment}
                                               level={0}
-                                              currentUser={user}
-                                              onUpdate={updateCommentMutation.mutate}
-                                              onDelete={deleteCommentMutation.mutate}
-                                              isUpdating={updateCommentMutation.isPending}
-                                              isDeleting={deleteCommentMutation.isPending}
+                                                                currentUser={user}
+                                                                onUpdate={updateCommentMutation.mutate}
+                                                                onDelete={deleteCommentMutation.mutate}
+                                                                isUpdating={updateCommentMutation.isPending}
+                                                                isDeleting={deleteCommentMutation.isPending}
                                               onReply={handleReplyClick}
-                                            />
-                                          ))
-                                        ) : (
-                                          <p className="text-sm text-muted-foreground italic text-center py-4">No comments yet.</p>
-                                        )}
-                                    </div>
+                                                            />
+                                                        ))
+                                                    ) : (
+                                                        <p className="text-sm text-muted-foreground italic text-center py-4">No comments yet.</p>
+                                                    )}
+                                                </div>
                                     {/* Input Area - Add px-4 and pb-2 */}
                                     <div className="shrink-0 bg-gray-50 pt-2 px-4 pb-2">
                                         <Textarea ref={commentInputRef} placeholder={replyingToCommentId ? "Write your reply..." : "Add your comment..."} className="mb-2" value={newCommentText} onChange={(e) => setNewCommentText(e.target.value)} rows={3} />
-                                        {selectedAttachmentFiles.length > 0 && (
-                                          <div className="mb-2 space-y-1">
-                                            <p className="text-xs font-medium text-muted-foreground">Selected files:</p>
+                                                     {selectedAttachmentFiles.length > 0 && (
+                                                       <div className="mb-2 space-y-1">
+                                                           <p className="text-xs font-medium text-muted-foreground">Selected files:</p>
                                             <ul className="list-none p-0 m-0 max-h-20 overflow-y-auto">
-                                              {selectedAttachmentFiles.map((file, index) => (
-                                                <li key={index} className="flex items-center justify-between text-xs bg-muted/50 px-2 py-1 rounded-md">
-                                                  <span className="truncate mr-2">{file.name}</span>
+                                                               {selectedAttachmentFiles.map((file, index) => (
+                                                                   <li key={index} className="flex items-center justify-between text-xs bg-muted/50 px-2 py-1 rounded-md">
+                                                                       <span className="truncate mr-2">{file.name}</span>
                                                   <Button variant="ghost" size="icon" className="h-4 w-4 text-muted-foreground hover:text-destructive shrink-0" onClick={() => handleRemoveSelectedAttachment(file)} title="Remove file">
-                                                    <XCircle className="h-3 w-3" />
-                                                  </Button>
-                                                </li>
-                                              ))}
-                                            </ul>
-                                          </div>
-                                        )}
-                                        <div className="flex items-center justify-end gap-2">
+                                                                           <XCircle className="h-3 w-3" />
+                                                                       </Button>
+                                                                   </li>
+                                                               ))}
+                                                           </ul>
+                                                       </div>
+                                                     )}
+                                                     <div className="flex items-center justify-end gap-2">
                                           <input type="file" ref={commentAttachmentInputRef} onChange={handleCommentAttachmentFilesSelected} multiple className="hidden" />
                                           <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" title="Attach files" type="button" onClick={() => commentAttachmentInputRef.current?.click()}>
-                                            <Paperclip className="h-4 w-4" />
-                                          </Button>
+                                                             <Paperclip className="h-4 w-4" />
+                                                         </Button>
                                           <Button size="sm" onClick={() => { if (newCommentText.trim() || selectedAttachmentFiles.length > 0) { addCommentMutation.mutate({ commentText: newCommentText.trim(), parentId: replyingToCommentId, files: selectedAttachmentFiles, onSuccessCallback: () => { setNewCommentText(''); setReplyingToCommentId(null); setSelectedAttachmentFiles([]); } }); } else { toast.info("Comment cannot be empty."); } }} disabled={!currentVariationId || addCommentMutation.isPending}>
-                                            {addCommentMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null} Send
-                                          </Button>
-                                        </div>
-                                    </div>
+                                                             {addCommentMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null} Send
+                                                         </Button>
+                                                     </div>
+                                                </div>
                                 </aside>
                             </div>
                         </DialogContent>
