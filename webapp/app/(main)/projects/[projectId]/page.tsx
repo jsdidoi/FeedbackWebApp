@@ -6,7 +6,7 @@ import { useAuth } from '@/providers/AuthProvider';
 import { useParams, useRouter } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Badge } from "@/components/ui/badge";
-import { Loader2, PlusCircle, Pencil, Check, X, ChevronLeft, ChevronRight, Replace, RefreshCw, Trash2, Archive } from 'lucide-react';
+import { Loader2, PlusCircle, Pencil, Check, X, ChevronLeft, ChevronRight, Replace, RefreshCw, Trash2, Archive, Paperclip, XCircle, ChevronDown } from 'lucide-react';
 import Link from 'next/link';
 import Breadcrumbs, { BreadcrumbItem } from '@/components/ui/breadcrumbs';
 import { Button } from '@/components/ui/button';
@@ -83,6 +83,22 @@ import {
     TooltipProvider, // Needed to wrap the provider around the list
     TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { User } from '@supabase/supabase-js'; // Import User type
+import {
+    useUpdateVersionDetails,
+    useAddVersionWithVariations,
+    useAddVariationsToVersion,
+    useReplaceVariationFile,
+    useDeleteVariation,
+    useUpdateVariationDetails,
+    useUpdateDesignDetails,
+    useDeleteDesign,
+    useDeleteProject,
+    useSetProjectArchivedStatus,
+    useAddComment,
+    useUpdateComment,
+    useDeleteComment
+} from '@/hooks/mutations'; // Reverted: Assuming this path is correct despite linter
 
 // For Upload Queue
 interface UploadingFileInfo {
@@ -217,7 +233,8 @@ const fetchCommentsForVariation = async (supabase: any, variationId: string | nu
         .from('comments')
         .select(`
             *,
-            profiles:user_id ( display_name ) 
+            profiles:user_id ( display_name ),
+            attachments (*)
         `)
         .eq('variation_id', variationId)
         .order('created_at', { ascending: true }); // Show oldest comments first
@@ -226,10 +243,11 @@ const fetchCommentsForVariation = async (supabase: any, variationId: string | nu
         console.error("Error fetching comments:", error.message); // Log the message specifically
         throw new Error(`Failed to fetch comments: ${error.message}`);
     }
-    // Ensure profiles is always an object or null
+    // Ensure profiles and attachments are always arrays/objects or null
     return data?.map((comment: any) => ({ // Explicitly type comment as any for mapping
         ...comment, 
-        profiles: comment.profiles || null 
+        profiles: comment.profiles || null,
+        attachments: comment.attachments || [] // Ensure attachments is an array
     })) || [];
 };
 
@@ -453,296 +471,46 @@ const useCreateDesignFromUpload = (
     });
 };
 
-// --- NEW: Add Comment Hook ---
-const useAddComment = (designId: string, variationId: string) => {
-    const { supabase, user } = useAuth(); // Get user from auth
-    const queryClient = useQueryClient();
-
-    return useMutation({
-        mutationFn: async (commentText: string) => {
-            if (!supabase) throw new Error("Supabase client not available");
-            if (!user) throw new Error("User not authenticated"); // Check for user
-            if (!designId) throw new Error("Design ID is required");
-            if (!variationId) throw new Error("Variation ID is required");
-            if (!commentText?.trim()) throw new Error("Comment text cannot be empty");
-
-            const insertData = {
-                variation_id: variationId,
-                user_id: user.id, // Add user_id
-                content: commentText.trim(), // Changed 'text' to 'content'
-                // Removed design_id as it doesn't exist in the table
-            };
-
-            const { data, error } = await supabase
-                .from('comments')
-                .insert(insertData)
-                .select()
-                .single();
-
-            if (error) {
-                // Log the specific Supabase error message
-                console.error('Supabase Error inserting comment:', error.message); 
-                throw new Error(`Failed to add comment: ${error.message}`);
-            }
-            return data;
-        },
-        onSuccess: (data) => {
-            toast.success(`Comment added successfully!`);
-            // Invalidate the specific comments query for this variation
-            queryClient.invalidateQueries({ queryKey: ['comments', variationId] }); 
-        },
-        onError: (error) => {
-            toast.error(error.message);
-        },
-    });
-};
-
-// --- NEW: Hook to Update VERSION Details (Stage/Status) ---
-const useUpdateVersionDetails = (versionId: string, designId: string, projectId: string | null) => { // Added projectId
+// --- NEW: Update Project Details Hook ---
+const useUpdateProjectDetails = (projectId: string) => {
     const { supabase } = useAuth();
     const queryClient = useQueryClient();
 
     return useMutation({
-        mutationFn: async ({ stage, status }: { stage: DesignStage, status: VersionRoundStatus }) => {
-            if (!supabase) throw new Error("Supabase client not available");
-            if (!versionId) throw new Error("Version ID is required");
-
-            const updateData = {
-                stage: stage,
-                status: status,
-                updated_at: new Date().toISOString(),
-            };
-
-            const { data, error } = await supabase
-                .from('versions') // <-- Update VERSIONS table
-                .update(updateData)
-                .eq('id', versionId)
-                .select()
-                .single();
-
-            if (error) {
-                // Enhanced logging
-                console.error('RAW Supabase updateVersionDetails ERROR object:', JSON.stringify(error, null, 2)); 
-                console.error('Error updating version details:', error); 
-                // Throw error with stringified object
-                throw new Error(`Failed to update version details: ${error?.message || JSON.stringify(error)}`);
-            }
-            return data;
-        },
-        onSuccess: (data) => {
-            console.log('[UpdateVersionSuccess] Data:', data); // <-- Keep logging for now
-            toast.success(`Version ${data.version_number} updated successfully!`);
-            // Invalidate design details to refetch version data
-            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] }); 
-            // Use the passed projectId for designs invalidation
-            if (projectId) {
-                queryClient.invalidateQueries({ queryKey: ['designs', projectId] }); 
-            }
-        },
-        onError: (error) => {
-            toast.error(error.message);
-        },
-    });
-};
-
-// --- NEW: Hook to Update VARIATION Details (Status) ---
-const useUpdateVariationDetails = (variationId: string, designId: string, projectId: string | null) => { // Added projectId
-    const { supabase } = useAuth();
-    const queryClient = useQueryClient();
-
-    return useMutation({
-        mutationFn: async ({ status }: { status: VariationFeedbackStatus }) => {
-            if (!supabase) throw new Error("Supabase client not available");
-            if (!variationId) throw new Error("Variation ID is required");
-
-            const updateData = {
-                status: status,
-                updated_at: new Date().toISOString(),
-            };
-
-            const { data, error } = await supabase
-                .from('variations') // <-- Update VARIATIONS table
-                .update(updateData)
-                .eq('id', variationId)
-                .select()
-                .single();
-
-            if (error) {
-                console.error('Error updating variation details:', error);
-                throw new Error(`Failed to update variation status: ${error.message}`);
-            }
-            return data;
-        },
-        onSuccess: (data) => {
-            toast.success(`Variation ${data.variation_letter} status updated to ${data.status}!`);
-            // Invalidate design details to refetch variation data within the modal
-            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] }); 
-            // ALSO invalidate the designs grid query for the current project
-            if (projectId) {
-                queryClient.invalidateQueries({ queryKey: ['designs', projectId] }); 
-            }
-        },
-        onError: (error) => {
-            toast.error(error.message);
-        },
-    });
-};
-
-// --- NEW: Hook to Update Design Details (e.g., Name) ---
-const useUpdateDesignDetails = (projectId: string | null) => { // Accept projectId
-    const { supabase } = useAuth();
-    const queryClient = useQueryClient();
-
-    return useMutation({ 
-        mutationFn: async ({ designId, name }: { designId: string, name: string }) => { // Expect designId here
-            if (!supabase) throw new Error("Supabase client not available");
-            // designId is now passed in mutate, no need to check hook arg
-            // if (!designId) throw new Error("Cannot update design: Design ID is missing.");
-            if (!name?.trim()) throw new Error("Design name cannot be empty");
-
-            const updateData = {
-                name: name.trim(),
-                updated_at: new Date().toISOString(),
-            };
-
-            const { data, error } = await supabase
-                .from('designs') 
-                .update(updateData)
-                .eq('id', designId)
-                .select()
-                .single();
-
-            if (error) {
-                console.error('Error updating design details:', error);
-                throw new Error(`Failed to update design name: ${error.message}`);
-            }
-            return data; // Returns the updated design object
-        },
-        onSuccess: (updatedDesign, variables) => {
-            // variables = { designId, name }
-            toast.success(`Design name updated to "${updatedDesign.name}"`);
-            // Invalidate queries to refresh UI
-            queryClient.invalidateQueries({ queryKey: ['designDetails', variables.designId] }); // Invalidate specific details if modal is open
-            if (projectId) {
-                queryClient.invalidateQueries({ queryKey: ['designs', projectId] }); // Invalidate the grid
-            }
-        },
-        onError: (error) => {
-            toast.error(error.message); // Handled by the hook
-        },
-    });
-};
-
-// --- NEW: Hook to Delete a Design (Calls Assumed Backend Function) ---
-const useDeleteDesign = (projectId: string | null) => {
-    const { supabase } = useAuth();
-    const queryClient = useQueryClient();
-
-    return useMutation({ 
-        mutationFn: async (designId: string) => {
-            if (!supabase) throw new Error("Supabase client not available");
-            if (!designId) throw new Error("Cannot delete design: Design ID is missing.");
-
-            // Call the backend function (replace 'delete_design_cascade' if needed)
-            const { error } = await supabase.rpc('delete_design_cascade', { 
-                p_design_id: designId 
-            });
-
-            if (error) {
-                console.error('Error calling delete_design_cascade RPC:', error);
-                throw new Error(`Failed to delete design: ${error.message}`);
-            }
-            
-            // Return the deleted ID for potential optimistic updates
-            return { designId }; 
-        },
-        onSuccess: (data, variables) => {
-            // variables = designId passed to mutate
-            toast.success(`Design deleted successfully!`);
-            // Invalidate the designs grid query to remove the card
-            if (projectId) {
-                queryClient.invalidateQueries({ queryKey: ['designs', projectId] });
-            }
-            // Optionally, you could remove the item optimistically from the query cache
-            // queryClient.setQueryData(['designs', projectId], (oldData: DesignGridItem[] | undefined) => 
-            //     oldData ? oldData.filter(d => d.id !== variables) : []
-            // );
-        },
-        onError: (error) => {
-            toast.error(error.message); // Handled by the hook
-        },
-    });
-};
-
-// --- NEW: Hook to Delete a Project (Calls Assumed Backend Function) ---
-const useDeleteProject = () => { // Doesn't need projectId initially
-    const { supabase } = useAuth();
-    const queryClient = useQueryClient();
-
-    return useMutation({ 
-        mutationFn: async (projectId: string) => {
-            if (!supabase) throw new Error("Supabase client not available");
-            if (!projectId) throw new Error("Cannot delete project: Project ID is missing.");
-
-            // Call the backend function (replace 'delete_project_cascade' if needed)
-            const { error } = await supabase.rpc('delete_project_cascade', { 
-                p_project_id: projectId 
-            });
-
-            if (error) {
-                console.error('Error calling delete_project_cascade RPC:', error);
-                throw new Error(`Failed to delete project: ${error.message}`);
-            }
-            
-            // Return the deleted ID for potential UI updates/redirects
-            return { projectId }; 
-        },
-        onSuccess: (data, variables) => {
-            // variables = projectId passed to mutate
-            toast.success(`Project deleted successfully!`);
-            // Invalidate the 'all projects' query to update the sidebar
-            queryClient.invalidateQueries({ queryKey: ['projects', 'all'] });
-            // Note: The current project query ['project', variables] is now invalid,
-            // but invalidating it might cause errors if the component tries to refetch deleted data.
-            // We'll handle redirecting away from the deleted project in the component.
-        },
-        onError: (error) => {
-            toast.error(error.message); // Handled by the hook
-        },
-    });
-};
-
-// --- Update Project Details Hook ---
-const useUpdateProjectDetails = (projectId: string | null) => {
-    const { supabase } = useAuth();
-    const queryClient = useQueryClient();
-
-    return useMutation({
-        mutationFn: async ({ name, description, status }: { name?: string, description?: string | null, status?: string }) => {
+        mutationFn: async ({ name, description, status, is_archived }: {
+            name?: string;
+            description?: string | null;
+            status?: ProjectStatus;
+            is_archived?: boolean;
+        }) => {
             if (!supabase) throw new Error("Supabase client not available");
             if (!projectId) throw new Error("Project ID is required");
-            // Removed name check, as we might only be updating status/description
-            // if (!name?.trim()) throw new Error("Project name cannot be empty"); 
 
-            // Build update object conditionally
-            const updateData: { name?: string, description?: string | null, status?: string, updated_at: string } = {
-                updated_at: new Date().toISOString()
-            };
+            // Build the update object only with provided fields
+            const updateData: Partial<{
+                name: string;
+                description: string | null;
+                status: ProjectStatus;
+                is_archived: boolean;
+                updated_at: string;
+            }> = { updated_at: new Date().toISOString() };
+
             if (name !== undefined) updateData.name = name.trim();
-            if (description !== undefined) updateData.description = description; // Already handles null
+            if (description !== undefined) updateData.description = description; // Allow null
             if (status !== undefined) updateData.status = status;
+            if (is_archived !== undefined) updateData.is_archived = is_archived;
 
-            // Check if there's anything to update besides timestamp
-            if (Object.keys(updateData).length <= 1) {
-                 console.warn("No project details provided for update besides timestamp.");
-                 // Optionally throw an error or return early?
-                 // For archiving, we expect status, so this shouldn't be hit.
-                 // Let's allow just updating the timestamp if needed.
-                 // throw new Error("No details provided for update.");
+            if (Object.keys(updateData).length <= 1) { // Only updated_at present
+                console.warn("No fields provided to update project details.");
+                // Optionally return the existing data or throw a different error
+                // For now, let's prevent the unnecessary DB call
+                // Fetch current data to return? Or just return null/undefined?
+                // Let's throw a specific error for now.
+                throw new Error("No fields provided for update.");
             }
 
             const { data, error } = await supabase
-                .from('projects') 
+                .from('projects')
                 .update(updateData)
                 .eq('id', projectId)
                 .select()
@@ -754,507 +522,158 @@ const useUpdateProjectDetails = (projectId: string | null) => {
             }
             return data;
         },
-        onError: (error) => {
-            toast.error(error.message);
-        },
-    });
-};
-
-// --- NEW: Hook to Set Project Archived Status --- 
-const useSetProjectArchivedStatus = () => {
-    const { supabase } = useAuth();
-    const queryClient = useQueryClient();
-
-    return useMutation({
-        mutationFn: async ({ projectId, is_archived }: { projectId: string, is_archived: boolean }) => {
-            if (!supabase) throw new Error("Supabase client not available");
-            if (!projectId) throw new Error("Project ID is required");
-
-            const updateData = {
-                is_archived: is_archived,
-                updated_at: new Date().toISOString(),
-            };
-
-            const { data, error } = await supabase
-                .from('projects')
-                .update(updateData)
-                .eq('id', projectId)
-                .select('id, name, is_archived') // Select fields needed for toast/invalidation
-                .single();
-
-            if (error) {
-                console.error('Full Supabase Set Archived Status Error:', error);
-                throw new Error(`Failed to update project archived status: ${error?.message || JSON.stringify(error)}`);
-            }
-            return data;
-        },
-        onSuccess: (updatedProject) => {
-            // Display toast based on whether it was archived or unarchived
-            const action = updatedProject.is_archived ? 'archived' : 'unarchived';
-            toast.success(`Project "${updatedProject.name}" ${action}.`);
-            // Invalidate the 'all projects' query to refresh sidebar lists
-            queryClient.invalidateQueries({ queryKey: ['projects', 'all'] });
-            // Also invalidate the specific project details if it happens to be selected
-            queryClient.invalidateQueries({ queryKey: ['project', updatedProject.id] });
-        },
-        onError: (error) => {
-            toast.error(error.message);
-        },
-    });
-};
-
-// --- NEW: Hook to Add Version with Variations --- 
-const useAddVersionWithVariations = (
-    designId: string,
-    projectId: string,
-    setCurrentVersionId: React.Dispatch<React.SetStateAction<string | null>>,
-    setCurrentVariationId: React.Dispatch<React.SetStateAction<string | null>>
-) => {
-    const { supabase } = useAuth();
-    const queryClient = useQueryClient();
-
-    // Helper type for the mutation function argument
-    type AddVersionPayload = {
-        files: File[];
-    };
-
-    return useMutation({
-        mutationFn: async ({ files }: AddVersionPayload) => {
-            if (!supabase) throw new Error("Supabase client not available");
-            if (!designId) throw new Error("Design ID is required");
-            if (!projectId) throw new Error("Project ID is required");
-            if (!files || files.length === 0) throw new Error("No files provided");
-
-            console.log(`[AddVersion] Starting process for ${files.length} files on design ${designId}`);
-
-            // --- 1. Determine New Version Number --- 
-            const { data: existingVersions, error: fetchError } = await supabase
-                .from('versions')
-                .select('version_number')
-                .eq('design_id', designId)
-                .order('version_number', { ascending: false })
-                .limit(1);
-
-            if (fetchError) {
-                console.error("[AddVersion] Error fetching existing versions:", fetchError);
-                throw new Error(`Failed to determine next version number: ${fetchError.message}`);
-            }
-
-            const latestVersionNumber = existingVersions?.[0]?.version_number ?? 0;
-            const newVersionNumber = latestVersionNumber + 1;
-            console.log(`[AddVersion] Determined new version number: ${newVersionNumber}`);
-
-            // --- 2. Create New Version Record --- 
-            // Define initial status/stage for new versions (adjust as needed)
-            const initialVersionStatus: VersionRoundStatus = VersionRoundStatus.WorkInProgress;
-            const initialVersionStage: DesignStage = DesignStage.Sketch;
-            
-            const { data: newVersion, error: versionError } = await supabase
-                .from('versions')
-                .insert({ 
-                    design_id: designId, 
-                    version_number: newVersionNumber, 
-                    status: initialVersionStatus,
-                    stage: initialVersionStage 
-                })
-                .select()
-                .single();
-
-            if (versionError) {
-                console.error("[AddVersion] Error creating new version record:", versionError);
-                throw new Error(`Failed to create version ${newVersionNumber}: ${versionError.message}`);
-            }
-            if (!newVersion) throw new Error('Failed to create version, no data returned.');
-            const newVersionId = newVersion.id;
-            console.log(`[AddVersion] Created new version record: ${newVersionId} (V${newVersionNumber})`);
-
-            // --- 3. Process Each File: Create Variation, Upload, Update --- 
-            const variationResults = [];
-            const bucketName = 'design-variations';
-            const initialVariationStatus = 'Pending Feedback'; // Or derive from version status/stage?
-
-            for (let i = 0; i < files.length; i++) {
-                const file = files[i];
-                const variationLetter = String.fromCharCode(65 + i); // A, B, C...
-                let createdVariationId = '';
-                let finalFilePath = '';
-
-                try {
-                    // 3a. Create Variation Record
-                    const { data: newVariation, error: variationError } = await supabase
-                        .from('variations')
-                        .insert({ 
-                            version_id: newVersionId, 
-                            variation_letter: variationLetter, 
-                            status: initialVariationStatus
-                            // file_path initially null
-                        })
-                        .select()
-                        .single();
-
-                    if (variationError) throw new Error(`Variation ${variationLetter} creation failed: ${variationError.message}`);
-                    if (!newVariation) throw new Error(`Variation ${variationLetter} creation failed, no data returned.`);
-                    createdVariationId = newVariation.id;
-                    console.log(`[AddVersion] Created variation record: ${createdVariationId} (${variationLetter}) for V${newVersionNumber}`);
-
-                    // 3b. Upload File
-                    // Path: projects/{projectId}/designs/{designId}/versions/{newVersionId}/variations/{variationId}/{fileName}
-                    finalFilePath = `projects/${projectId}/designs/${designId}/versions/${newVersionId}/variations/${createdVariationId}/${file.name}`;
-                    console.log(`[AddVersion] Attempting upload to: ${finalFilePath}`);
-                    
-                    const { error: uploadError } = await supabase.storage
-                        .from(bucketName)
-                        .upload(finalFilePath, file, { upsert: true }); // Use upsert: true if replacing is acceptable on retry?
-
-                    if (uploadError) throw new Error(`Storage upload failed for ${file.name}: ${uploadError.message}`);
-                    console.log(`[AddVersion] Successfully uploaded ${file.name} to ${finalFilePath}`);
-
-                    // 3c. Update Variation with File Path
-                    const { error: updateError } = await supabase
-                        .from('variations')
-                        .update({ file_path: finalFilePath })
-                        .eq('id', createdVariationId);
-
-                    if (updateError) {
-                         // Log warning but don't necessarily fail the whole batch?
-                         console.warn(`[AddVersion] Failed to link ${finalFilePath} to variation ${createdVariationId}:`, updateError);
-                         toast.warning(`File ${file.name} uploaded, but failed to link to variation record.`);
-                    } else {
-                        console.log(`[AddVersion] Successfully linked ${finalFilePath} to variation ${createdVariationId}`);
-                    }
-                    
-                    variationResults.push({ variationId: createdVariationId, filePath: finalFilePath, fileName: file.name });
-                    
-                } catch (fileError: any) {
-                    console.error(`[AddVersion] FAILED processing file ${i} (${file.name}):`, fileError);
-                    // Rollback/cleanup attempts? Complex. For now, just report error.
-                    // Maybe collect errors and report them all at the end?
-                    // If one file fails, should the whole version creation fail? Let's say yes for now.
-                    throw new Error(`Failed to process file ${file.name}: ${fileError.message}`); 
-                    // Consider more granular error reporting / partial success later
-                }
-            }
-            
-            console.log(`[AddVersion] Successfully processed ${variationResults.length} files for V${newVersionNumber}.`);
-            // Return info about the newly created version and its variations
-            return { newVersion, variations: variationResults }; 
-
-        },
-        onSuccess: (data) => {
-            // data = { newVersion, variations: [...] }
-            toast.success(`Version ${data.newVersion.version_number} with ${data.variations.length} variation(s) added successfully!`);
-            // Invalidate design details to refresh the modal
-            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] }); 
-            // Optionally, invalidate the main design grid if its display depends on the *existence* of new versions
-            queryClient.invalidateQueries({ queryKey: ['designs', projectId] }); 
-            // Update state with the new version ID and first variation ID
-            setCurrentVersionId(data.newVersion.id);
-            if (data.variations && data.variations.length > 0) {
-                 setCurrentVariationId(data.variations[0].variationId); // Correct property name
-            } else {
-                setCurrentVariationId(null); // Handle case with no variations (though unlikely here)
-            }
-        },
-        onError: (error) => {
-            toast.error(`Failed to add new version: ${error.message}`);
-            // Consider specific cleanup or error state updates here
-        },
-    });
-};
-
-// --- NEW: Hook to Add Variations to an Existing Version ---
-const useAddVariationsToVersion = (
-    versionId: string, 
-    designId: string, // Needed for invalidation and path construction
-    projectId: string // Needed for path construction
-) => {
-    const { supabase } = useAuth();
-    const queryClient = useQueryClient();
-
-    type AddVariationsPayload = {
-        files: File[];
-    };
-
-    return useMutation({
-        mutationFn: async ({ files }: AddVariationsPayload) => {
-            if (!supabase) throw new Error("Supabase client not available");
-            if (!versionId) throw new Error("Cannot add variations: No version selected.");
-            if (!designId) throw new Error("Cannot add variations: Design ID missing.");
-            if (!projectId) throw new Error("Cannot add variations: Project ID missing.");
-            if (!files || files.length === 0) throw new Error("No files provided");
-
-            console.log(`[AddVar] Starting process for ${files.length} files on version ${versionId}`);
-
-            // --- 1. Determine Starting Variation Letter --- 
-            const { data: existingVariations, error: fetchError } = await supabase
-                .from('variations')
-                .select('id') // Just need count or presence
-                .eq('version_id', versionId);
-            
-            if (fetchError) {
-                 console.error("[AddVar] Error fetching existing variations count:", fetchError);
-                 throw new Error(`Failed to determine next variation letter: ${fetchError.message}`);
-            }
-
-            const existingVariationsCount = existingVariations?.length ?? 0;
-            console.log(`[AddVar] Found ${existingVariationsCount} existing variations for version ${versionId}.`);
-
-            // --- 2. Process Each File: Create Variation, Upload, Update --- 
-            const results = [];
-            const bucketName = 'design-variations';
-            const initialVariationStatus = 'Pending Feedback'; // Consistent initial status
-
-            for (let i = 0; i < files.length; i++) {
-                const file = files[i];
-                // Calculate letter based on existing count + current index
-                const variationLetter = String.fromCharCode(65 + existingVariationsCount + i); 
-                let createdVariationId = '';
-                let finalFilePath = '';
-
-                try {
-                    // 2a. Create Variation Record
-                    const { data: newVariation, error: variationError } = await supabase
-                        .from('variations')
-                        .insert({ 
-                            version_id: versionId, 
-                            variation_letter: variationLetter, 
-                            status: initialVariationStatus
-                        })
-                        .select()
-                        .single();
-
-                    if (variationError) throw new Error(`Variation ${variationLetter} creation failed: ${variationError.message}`);
-                    if (!newVariation) throw new Error(`Variation ${variationLetter} creation failed, no data returned.`);
-                    createdVariationId = newVariation.id;
-                    console.log(`[AddVar] Created variation record: ${createdVariationId} (${variationLetter}) for version ${versionId}`);
-
-                    // 2b. Upload File
-                    finalFilePath = `projects/${projectId}/designs/${designId}/versions/${versionId}/variations/${createdVariationId}/${file.name}`;
-                    console.log(`[AddVar] Attempting upload to: ${finalFilePath}`);
-                    
-                    const { error: uploadError } = await supabase.storage
-                        .from(bucketName)
-                        .upload(finalFilePath, file, { upsert: true });
-
-                    if (uploadError) throw new Error(`Storage upload failed for ${file.name}: ${uploadError.message}`);
-                    console.log(`[AddVar] Successfully uploaded ${file.name} to ${finalFilePath}`);
-
-                    // 2c. Update Variation with File Path
-                    const { error: updateError } = await supabase
-                        .from('variations')
-                        .update({ file_path: finalFilePath })
-                        .eq('id', createdVariationId);
-
-                    if (updateError) {
-                         console.warn(`[AddVar] Failed to link ${finalFilePath} to variation ${createdVariationId}:`, updateError);
-                         toast.warning(`File ${file.name} uploaded, but failed to link to variation record.`);
-                    } else {
-                        console.log(`[AddVar] Successfully linked ${finalFilePath} to variation ${createdVariationId}`);
-                    }
-                    
-                    results.push({ variationId: createdVariationId, filePath: finalFilePath, fileName: file.name });
-                    
-                } catch (fileError: any) {
-                    console.error(`[AddVar] FAILED processing file ${i} (${file.name}):`, fileError);
-                    throw new Error(`Failed to process file ${file.name}: ${fileError.message}`); 
-                }
-            }
-            
-            console.log(`[AddVar] Successfully processed ${results.length} files for version ${versionId}.`);
-            return { addedVariations: results }; 
-
-        },
         onSuccess: (data, variables) => {
-            // data = { addedVariations: [...] }; variables = { files: [...] }
-            toast.success(`${data.addedVariations.length} new variation(s) added successfully!`);
-            // Invalidate design details to refresh the modal and show new variations
-            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] }); 
+            // More specific success message based on what was updated
+            let updatedFields = [];
+            if (variables.name !== undefined) updatedFields.push('name');
+            if (variables.description !== undefined) updatedFields.push('description');
+            if (variables.status !== undefined) updatedFields.push('status');
+            if (variables.is_archived !== undefined) updatedFields.push(variables.is_archived ? 'archived status' : 'active status');
+
+            let message = `Project details updated successfully!`;
+            if (updatedFields.length > 0) {
+                message = `Project ${updatedFields.join(', ')} updated successfully!`;
+            }
+             if (data?.name) { // Prepend project name if available
+                 message = `Project "${data.name}" ${updatedFields.join(', ')} updated successfully!`;
+             }
+
+            toast.success(message);
+
+            // Invalidate queries to refetch updated data
+            queryClient.invalidateQueries({ queryKey: ['project', variables.projectId] }); // Specific project details
+            queryClient.invalidateQueries({ queryKey: ['projects', 'all'] }); // List for sidebar
         },
         onError: (error) => {
-            toast.error(`Failed to add new variations: ${error.message}`);
+            toast.error(error.message);
         },
     });
 };
 
-// --- NEW: Hook to Replace a Variation's File ---
-const useReplaceVariationFile = (
-    variationId: string,
-    designId: string, // Needed for path construction and invalidation
-    projectId: string // Needed for path construction
-) => {
-    const { supabase } = useAuth();
-    const queryClient = useQueryClient();
 
-    type ReplaceVariationPayload = {
-        file: File;
-        // We might need the old file path if we want to delete the old one explicitly, 
-        // but upsert should handle overwriting.
-    };
 
-    return useMutation({
-        mutationFn: async ({ file }: ReplaceVariationPayload) => {
-            if (!supabase) throw new Error("Supabase client not available");
-            if (!variationId) throw new Error("Cannot replace file: No variation selected.");
-            if (!designId) throw new Error("Cannot replace file: Design ID missing.");
-            if (!projectId) throw new Error("Cannot replace file: Project ID missing.");
-            if (!file) throw new Error("No file provided for replacement.");
+// --- Helper Function to Build Comment Tree ---
+const buildCommentTree = (comments: Comment[]): (Comment & { children: Comment[] })[] => { // Update return type
+    const commentMap: { [id: string]: Comment & { children: Comment[] } } = {};
+    const rootComments: (Comment & { children: Comment[] })[] = [];
 
-            console.log(`[ReplaceVar] Starting replacement for variation ${variationId} with file ${file.name}`);
-
-            // --- 1. Determine Storage Path --- 
-            // We need the version ID. We could pass it in, or fetch the variation details first.
-            // Fetching is safer but adds latency. Let's assume we construct it for now, 
-            // requiring versionId to be passed or available in scope where hook is used.
-            // OR, fetch the variation to get its current file_path and version_id.
-            const { data: variationData, error: fetchVarError } = await supabase
-                .from('variations')
-                .select('version_id, file_path')
-                .eq('id', variationId)
-                .single();
-
-            if (fetchVarError || !variationData) {
-                console.error("[ReplaceVar] Error fetching variation details:", fetchVarError);
-                throw new Error(`Failed to get details for variation ${variationId}: ${fetchVarError?.message}`);
-            }
-
-            const versionId = variationData.version_id;
-            // Construct the path using the fetched versionId. Use the NEW filename.
-            const storagePath = `projects/${projectId}/designs/${designId}/versions/${versionId}/variations/${variationId}/${file.name}`;
-            const bucketName = 'design-variations';
-            console.log(`[ReplaceVar] Determined storage path: ${storagePath}`);
-
-            // --- 2. Upload New File (Upsert) --- 
-            const { error: uploadError } = await supabase.storage
-                .from(bucketName)
-                .upload(storagePath, file, { upsert: true });
-
-            if (uploadError) {
-                 console.error(`[ReplaceVar] Upload failed for ${file.name}:`, uploadError);
-                 throw new Error(`Storage upload failed: ${uploadError.message}`);
-            }
-            console.log(`[ReplaceVar] Successfully uploaded ${file.name} to replace content at ${storagePath}`);
-
-            // --- 3. Update Variation File Path (if filename changed) --- 
-            // Check if the new path is different from the old one stored.
-            if (variationData.file_path !== storagePath) {
-                const { error: updateError } = await supabase
-                    .from('variations')
-                    .update({ file_path: storagePath, updated_at: new Date().toISOString() })
-                    .eq('id', variationId);
-
-                if (updateError) {
-                    console.warn(`[ReplaceVar] File replaced in storage, but failed to update file_path in DB for ${variationId}:`, updateError);
-                    toast.warning(`File replaced, but DB record update failed.`);
-                    // Throw error here? Or allow partial success?
-                    throw new Error(`Failed to update variation record: ${updateError.message}`);
-                } else {
-                    console.log(`[ReplaceVar] Successfully updated file_path for variation ${variationId}`);
-                }
-            } else {
-                 console.log(`[ReplaceVar] File path unchanged, skipping DB update.`);
-                 // Still might want to update the updated_at timestamp?
-                 await supabase
-                    .from('variations')
-                    .update({ updated_at: new Date().toISOString() })
-                    .eq('id', variationId);
-            }
-
-            return { variationId, newFilePath: storagePath };
-        },
-        onSuccess: (data) => {
-            // data = { variationId, newFilePath }
-            toast.success(`Variation file replaced successfully!`);
-            // Invalidate design details to refresh the modal image viewer
-            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] }); 
-        },
-        onError: (error) => {
-            toast.error(`Failed to replace variation file: ${error.message}`);
-        },
+    // Initialize map and children array
+    comments.forEach(comment => {
+        commentMap[comment.id] = { ...comment, children: [] };
     });
+
+    // Build the tree structure
+    comments.forEach(comment => {
+        if (comment.parent_comment_id && commentMap[comment.parent_comment_id]) {
+            commentMap[comment.parent_comment_id].children.push(commentMap[comment.id]);
+        } else {
+            // Add top-level comments to the root array
+            rootComments.push(commentMap[comment.id]);
+        }
+    });
+
+    // Sort root comments (optional, e.g., by creation date)
+    rootComments.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+    // Sort children recursively (optional)
+    // // Sort children recursively (optional - removed for type simplicity)
+    // const sortChildren = (node: Comment & { children: Comment[] }) => {
+    //     if (node.children && Array.isArray(node.children)) {
+    //         node.children.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    //         node.children.forEach(sortChildren);
+    //     }
+    // };
+    // rootComments.forEach(sortChildren);
+
+    return rootComments;
 };
 
-// --- NEW: Hook to Delete a Variation ---
-const useDeleteVariation = (
-    variationId: string,
-    designId: string // Needed for invalidation
-    // ProjectId not strictly needed for deletion itself, but good practice? Pass if needed.
-) => {
-    const { supabase } = useAuth();
-    const queryClient = useQueryClient();
+// --- Recursive Component for Rendering Comment Threads ---
+// Note: Need to explicitly type props for recursive components
+interface RenderCommentThreadProps {
+    comment: Comment & { children: Comment[] };
+    // commentsMap: { [id: string]: Comment & { children: Comment[] } }; // Not needed
+    level: number; // For indentation
+    // Pass down necessary props for CommentCard
+    currentUser: User | null;
+    onUpdate: (variables: { commentId: string; newContent: string, onSuccessCallback?: () => void; }) => void;
+    onDelete: (commentId: string) => void;
+    isUpdating: boolean;
+    isDeleting: boolean;
+    onReply: (parentCommentId: string) => void; // <<< Add onReply prop
+}
 
-    return useMutation({
-        mutationFn: async () => {
-            if (!supabase) throw new Error("Supabase client not available");
-            if (!variationId) throw new Error("Cannot delete: No variation ID provided.");
-
-            console.log(`[DeleteVar] Starting deletion for variation ${variationId}`);
-
-            // --- 1. Get File Path --- 
-            const { data: variationData, error: fetchVarError } = await supabase
-                .from('variations')
-                .select('file_path') // Only need the path for storage deletion
-                .eq('id', variationId)
-                .single();
-            
-            if (fetchVarError && fetchVarError.code !== 'PGRST116') { // Ignore 'not found' error if already deleted?
-                console.error("[DeleteVar] Error fetching variation details:", fetchVarError);
-                throw new Error(`Failed to get details for variation ${variationId}: ${fetchVarError?.message}`);
-            }
-            
-            const filePath = variationData?.file_path;
-            const bucketName = 'design-variations';
-
-            // --- 2. Delete File from Storage (if path exists) --- 
-            if (filePath) {
-                console.log(`[DeleteVar] Attempting to delete file from storage: ${filePath}`);
-                const { error: storageError } = await supabase.storage
-                    .from(bucketName)
-                    .remove([filePath]); // remove expects an array of paths
-
-                if (storageError) {
-                    // Log error but potentially continue to delete DB record?
-                    // Or should failure here stop the process? Let's stop for now.
-                    console.error("[DeleteVar] Error deleting file from storage:", storageError);
-                    toast.error(`Failed to delete file from storage, aborting DB deletion.`); // More specific error
-                    throw new Error(`Storage deletion failed: ${storageError.message}`);
-                }
-                 console.log(`[DeleteVar] Successfully deleted file from storage: ${filePath}`);
-            } else {
-                console.log("[DeleteVar] No file path found for variation, skipping storage deletion.");
-            }
-
-            // --- 3. Delete Variation Record from Database --- 
-            const { error: dbError } = await supabase
-                .from('variations')
-                .delete()
-                .eq('id', variationId);
-
-            if (dbError) {
-                console.error("[DeleteVar] Error deleting variation record from DB:", dbError);
-                 // Attempted storage deletion might have succeeded, causing potential orphan?
-                 // For now, just report DB error.
-                throw new Error(`Failed to delete variation record: ${dbError.message}`);
-            }
-             console.log(`[DeleteVar] Successfully deleted variation record ${variationId} from DB.`);
-
-            return { variationId }; // Return deleted ID for potential UI updates
-        },
-        onSuccess: (data) => {
-            // data = { variationId }
-            toast.success(`Variation deleted successfully!`);
-            // Invalidate design details to refresh the modal (remove variation button, maybe change selected image)
-            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] }); 
-            // Note: We might need more sophisticated logic here to select the *next* available variation 
-            // if the currently selected one was deleted. The useEffect might handle this now.
-        },
-        onError: (error) => {
-            toast.error(`Failed to delete variation: ${error.message}`);
-        },
-    });
+const RenderCommentThread: React.FC<RenderCommentThreadProps> = ({ 
+    comment, 
+    level,
+    currentUser,
+    onUpdate,
+    onDelete,
+    isUpdating,
+    isDeleting,
+    onReply
+}) => {
+    // Add collapse state for root comments
+    const [collapsed, setCollapsed] = useState(false);
+    const isRoot = level === 0;
+    return (
+        <div className="space-y-2">
+            <div className="flex items-start">
+                <CommentCard
+                    key={comment.id}
+                    comment={comment}
+                    currentUser={currentUser}
+                    onUpdate={onUpdate}
+                    onDelete={onDelete}
+                    isUpdating={isUpdating}
+                    isDeleting={isDeleting}
+                    onReply={isRoot ? onReply : () => {}}
+                    level={level}
+                    {...(isRoot ? { collapsed, setCollapsed, numReplies: comment.children.length } : {})}
+                />
+            </div>
+            {/* Render children recursively, only if not collapsed */}
+            {comment.children && comment.children.length > 0 && !collapsed && (
+                isRoot ? (
+                    <div className="border-l-2 border-muted pl-4 mt-2 ml-5">
+                        {comment.children.map(childComment => (
+                            <RenderCommentThread
+                                key={childComment.id}
+                                comment={childComment as Comment & { children: Comment[] }}
+                                level={level + 1}
+                                currentUser={currentUser}
+                                onUpdate={onUpdate}
+                                onDelete={onDelete}
+                                isUpdating={isUpdating}
+                                isDeleting={isDeleting}
+                                onReply={onReply}
+                            />
+                        ))}
+                    </div>
+                ) : (
+                    <>
+                        {comment.children.map(childComment => (
+                            <RenderCommentThread
+                                key={childComment.id}
+                                comment={childComment as Comment & { children: Comment[] }}
+                                level={level + 1}
+                                currentUser={currentUser}
+                                onUpdate={onUpdate}
+                                onDelete={onDelete}
+                                isUpdating={isUpdating}
+                                isDeleting={isDeleting}
+                                onReply={onReply}
+                            />
+                        ))}
+                    </>
+                )
+            )}
+        </div>
+    );
 };
 
 export default function ProjectsOverviewPage() {
-    const { supabase } = useAuth();
+    const { supabase, user } = useAuth(); // Add user here
     const params = useParams();
     const router = useRouter();
     const queryClient = useQueryClient();
@@ -1283,11 +702,18 @@ export default function ProjectsOverviewPage() {
     const [editableModalTitle, setEditableModalTitle] = useState('');
     // NEW: State for Add Project Dialog
     const [isAddProjectDialogOpen, setIsAddProjectDialogOpen] = useState(false);
+    // NEW: State and Ref for comment replies
+    const [replyingToCommentId, setReplyingToCommentId] = useState<string | null>(null);
+    const commentInputRef = useRef<HTMLTextAreaElement>(null);
+    // NEW: State for comment attachments
+    const [selectedAttachmentFiles, setSelectedAttachmentFiles] = useState<File[]>([]);
 
     // --- Refs for hidden file inputs ---
     const addVersionFileInputRef = useRef<HTMLInputElement>(null);
     const addVariationFileInputRef = useRef<HTMLInputElement>(null);
     const replaceVariationFileInputRef = useRef<HTMLInputElement>(null);
+    // NEW: Ref for comment attachment file input
+    const commentAttachmentInputRef = useRef<HTMLInputElement>(null);
 
     // --- Form Hook for Add Design Dialog (Moved to Top Level) ---
     const {
@@ -1385,7 +811,9 @@ export default function ProjectsOverviewPage() {
 
             // Only set default if no version is selected OR the selected one is no longer valid
             if (!currentVersionExists) {
-                const targetVersion = designDetailsData.versions[0]; // Default to first version (which will be V1 after order change)
+                // const targetVersion = designDetailsData.versions[0]; // Default to first version (V1)
+                // <<< CHANGE: Default to the LAST version (latest) >>>
+                const targetVersion = designDetailsData.versions[designDetailsData.versions.length - 1]; 
                 setCurrentVersionId(targetVersion.id);
                 // When version changes, default variation
                 if (targetVersion.variations && targetVersion.variations.length > 0) {
@@ -1419,7 +847,10 @@ export default function ProjectsOverviewPage() {
     const addDesignMutation = useAddDesign(selectedProjectId || ''); 
     const createDesignFromUploadMutation = useCreateDesignFromUpload(selectedProjectId || '', setUploadQueue);
     const updateProjectDetailsMutation = useUpdateProjectDetails(selectedProjectId || '');
+    
+    // Removed previous log
     const addCommentMutation = useAddComment(selectedDesignIdForModal || '', currentVariationId || '');
+    
     // NEW: Instantiate version update hook
     const updateVersionDetailsMutation = useUpdateVersionDetails(
         currentVersionId || '', 
@@ -1458,17 +889,91 @@ export default function ProjectsOverviewPage() {
         selectedDesignIdForModal || '',
         selectedProjectId || null // Pass the currently selected projectId
     );
-
     // NEW: Instantiate design details update hook
-    const updateDesignDetailsMutation = useUpdateDesignDetails(selectedProjectId);
+    const updateDesignDetailsMutation = useUpdateDesignDetails(selectedProjectId || '');
     // NEW: Instantiate design delete hook
-    const deleteDesignMutation = useDeleteDesign(selectedProjectId);
+    const deleteDesignMutation = useDeleteDesign(selectedProjectId || '');
     // NEW: Instantiate project delete hook
     const deleteProjectMutation = useDeleteProject();
     // NEW: Instantiate add project hook
     const addProjectMutation = useAddProject();
     // NEW: Instantiate set archived status hook
     const setProjectArchivedStatusMutation = useSetProjectArchivedStatus();
+
+    // NEW: Instantiate update/delete comment hooks
+    const updateCommentMutation = useUpdateComment(currentVariationId || ''); // Handle null case
+    const deleteCommentMutation = useDeleteComment(currentVariationId || ''); // Handle null case
+
+    // --- Real-time Subscription for Comments ---
+    useEffect(() => {
+        // ADD THIS LOG: Check the variation ID every time the effect runs
+        console.log(`[Realtime Effect Run] currentVariationId: ${currentVariationId}`);
+
+        // Ensure supabase client and variationId are available
+        if (!supabase || !currentVariationId) {
+            // Add a log here too, to see if it exits early
+            console.log(`[Realtime Effect Run] Exiting early. Supabase: ${!!supabase}, VariationId: ${currentVariationId}`);
+            return;
+        }
+
+        console.log(`[Realtime] Setting up subscription for variation: ${currentVariationId}`);
+
+        // Define the channel
+        const channel = supabase.channel(`comments-for-variation-${currentVariationId}`)
+          .on(
+            'postgres_changes',
+            { 
+              event: '*', // Listen for INSERT, UPDATE, DELETE
+              schema: 'public', 
+              table: 'comments', 
+              filter: `variation_id=eq.${currentVariationId}` // Filter for the current variation
+            },
+            (payload) => {
+              // console.log('[Realtime] Change received!', payload);
+              // Log the specific event type
+              console.log(`[Realtime] Event received: ${payload.eventType}`, payload);
+              // Invalidate the comments query to trigger refetch
+              queryClient.invalidateQueries({ queryKey: ['comments', currentVariationId] });
+            }
+          )
+          .subscribe((status, err) => {
+            if (status === 'SUBSCRIBED') {
+                console.log(`[Realtime] Subscribed successfully to variation: ${currentVariationId}`);
+            } 
+            // REMOVED else if for CHANNEL_ERROR / TIMED_OUT to reduce console noise,
+            // as focus-based refetch handles data freshness.
+            else if (status === 'CLOSED') {
+                 console.log(`[Realtime] Subscription closed for variation: ${currentVariationId}`);
+            }
+          });
+
+        // Cleanup function to remove subscription on component unmount or variation change
+        return () => {
+            console.log(`[Realtime] Cleaning up subscription for variation: ${currentVariationId}`);
+            if (channel) {
+                supabase.removeChannel(channel).catch(error => {
+                     console.error("[Realtime] Error removing channel:", error);
+                });
+            }
+        };
+    }, [supabase, queryClient, currentVariationId]); // Dependencies
+
+    // --- NEW: Refetch comments on window focus ---
+    useEffect(() => {
+        const handleFocus = () => {
+            console.log("[Window Focus] Refetching comments for variation:", currentVariationId);
+            if (currentVariationId) {
+                queryClient.invalidateQueries({ queryKey: ['comments', currentVariationId] });
+            }
+        };
+
+        window.addEventListener('focus', handleFocus);
+
+        // Cleanup listener on component unmount
+        return () => {
+            window.removeEventListener('focus', handleFocus);
+        };
+    }, [queryClient, currentVariationId]); // Dependencies: Re-attach listener if queryClient or variationId changes
 
     // --- Handlers ---
     const handleSelectProject = (projectId: string) => {
@@ -1886,6 +1391,38 @@ export default function ProjectsOverviewPage() {
             }
             // onError handled by hook
         });
+    };
+
+    // --- NEW: Handler for clicking Reply button on a comment ---
+    const handleReplyClick = (parentCommentId: string) => {
+        console.log(`[Reply] Replying to comment ID: ${parentCommentId}`);
+        setReplyingToCommentId(parentCommentId); 
+        // Focus the main comment input
+        commentInputRef.current?.focus();
+        // Optionally, you could scroll the input into view here too
+        // commentInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    };
+
+    // --- NEW: Handler for comment attachment file selection ---
+    const handleCommentAttachmentFilesSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const files = event.target.files;
+        if (files && files.length > 0) {
+            // Append new files to the existing selection
+            setSelectedAttachmentFiles(prevFiles => [...prevFiles, ...Array.from(files)]);
+        } else {
+            console.log("[CommentAttach] No files selected.");
+        }
+        // Reset file input value to allow selecting the same file(s) again
+        if (event.target) {
+            event.target.value = '';
+        }
+    };
+
+    // --- NEW: Handler to remove a selected attachment file ---
+    const handleRemoveSelectedAttachment = (fileToRemove: File) => {
+        setSelectedAttachmentFiles(prevFiles => 
+            prevFiles.filter(file => file !== fileToRemove)
+        );
     };
 
     // --- Render ---
@@ -2339,9 +1876,18 @@ export default function ProjectsOverviewPage() {
                             className="hidden"
                             accept="image/*" 
                         />
+                        {/* NEW: Hidden file input for comment attachments */}
+                        <input 
+                            type="file"
+                            ref={commentAttachmentInputRef}
+                            onChange={handleCommentAttachmentFilesSelected}
+                            className="hidden"
+                            multiple // Allow multiple attachments
+                            // Define accepted file types if needed (e.g., accept=".pdf,image/*,.zip")
+                        />
 
                         <DialogOverlay className="bg-black/50" /> 
-                        <DialogContent className="p-0 h-[90vh] flex flex-col w-full max-w-full sm:max-w-[95vw] xl:max-w-screen-xl"> {/* Wider max-width */} 
+                        <DialogContent className="p-0 h-[90vh] flex flex-col w-full max-w-full sm:max-w-[95vw] xl:max-w-screen-xl overflow-hidden"> {/* Wider max-width */} 
                             <DialogHeader className="p-4 border-b shrink-0 flex flex-row justify-between items-center"> {/* Keep Header Flex */} 
                                 {/* Wrap Title ONLY */} 
                                 <div className="flex items-center gap-4 flex-grow mr-4"> {/* Allow title area to grow */} 
@@ -2380,7 +1926,7 @@ export default function ProjectsOverviewPage() {
                             
                             {/* Main Content Area - Grid for Image/Nav(Left) and Comments(Right) */} 
                             {/* Changed grid ratio to 5fr/2fr */}
-                            <div className="grid grid-cols-[5fr_2fr] flex-grow overflow-hidden"> 
+                            <div className="grid grid-cols-[5fr_2fr] flex-grow min-h-0 overflow-hidden h-full"> 
 
                                 {/* Left Side (Nav + Image) */} 
                                 <div className="grid grid-rows-[auto_1fr] overflow-hidden">
@@ -2568,149 +2114,80 @@ export default function ProjectsOverviewPage() {
                                 </div>
                                 
                                 {/* Right Side (Details & Comments) */} 
-                                <aside className="border-l overflow-y-auto flex flex-col">
-                                    {isLoadingDesignDetails ? (
-                                        <div className="p-4 text-center"><Loader2 className="h-6 w-6 animate-spin inline-block" /></div>
-                                    ) : errorDesignDetails ? (
-                                        <div className="p-4 text-red-600">Error loading sidebar.</div>
-                                    ) : designDetailsData ? (
-                                        <div className="flex-grow flex flex-col"> {/* Allow comments to grow */} 
-                                            {/* Details Section */} 
-                                            {/* Reduced padding to p-2 */}
-                                            <div className="p-2 border-b shrink-0"> 
-                                                 {/* Reduced margin to mb-1 */}
-                                                 <h4 className="text-base font-semibold mb-1">Details</h4>
-                                                 {/* Variation Details */}
-                                                 <p className="text-xs text-muted-foreground mb-1">Variation Status:</p>
-                                                 {/* Reduced margin to mb-2 */}
-                                                 <Badge variant={selectedVariation?.status === 'Rejected' ? 'destructive' : 'secondary'} className="mb-2">
-                                                      {selectedVariation?.status || 'N/A'}
-                                                 </Badge>
-
-                                                 {/* --- UPDATED: Variation Status Update Buttons --- */}
-                                                 {/* Reduced margin/padding to mt-2/pt-2 */}
-                                                 <div className="mt-2 border-t pt-2">
-                                                      {/* Reduced margin to mb-1 */}
-                                                      <h5 className="text-xs font-semibold mb-1 text-muted-foreground uppercase">Update Variation Status</h5>
-                                                      <div className="flex flex-row items-center gap-2">
-                                                          {/* Approve Button */}
-                                                          <Button 
-                                                              variant="default" 
-                                                              // size="sm" // Removed size
-                                                              className="bg-green-600 hover:bg-green-700 text-primary-foreground h-auto py-1 px-2 text-xs" // Reinstated explicit sizing
-                                                              title="Approve this variation" 
-                                                              onClick={() => {
-                                                                  updateVariationDetailsMutation.mutate({ 
-                                                                      status: VariationFeedbackStatus.Approved 
-                                                                  });
-                                                              }}
-                                                              disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.Approved}
-                                                          >
-                                                              Approve
-                                                          </Button>
-                                                          {/* Needs Changes Button */}
-                                                          <Button 
-                                                              variant="default" 
-                                                              // size="sm" // Removed size
-                                                              className="bg-orange-500 hover:bg-orange-600 text-primary-foreground h-auto py-1 px-2 text-xs" // Reinstated explicit sizing
-                                                              title="Request changes for this variation" 
-                                                              onClick={() => {
-                                                                  updateVariationDetailsMutation.mutate({ 
-                                                                      status: VariationFeedbackStatus.NeedsChanges 
-                                                                  });
-                                                              }}
-                                                              disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.NeedsChanges}
-                                                          >
-                                                              Changes {/* Shorter Label */}
-                                                          </Button>
-                                                          {/* Request Feedback Button */}
-                                                          <Button 
-                                                              variant="secondary" 
-                                                              // size="sm" // Removed size
-                                                              className="h-auto py-1 px-2 text-xs" // Reinstated explicit sizing
-                                                              title="Set status to Pending Feedback" 
-                                                              onClick={() => {
-                                                                  updateVariationDetailsMutation.mutate({ 
-                                                                      status: VariationFeedbackStatus.PendingFeedback 
-                                                                  });
-                                                              }}
-                                                              disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.PendingFeedback}
-                                                          >
-                                                              Feedback {/* Shorter Label */}
-                                                          </Button>
-                                                          {/* Reject Button */}
-                                                          <Button 
-                                                              variant="destructive" 
-                                                              // size="sm" // Removed size
-                                                              className="h-auto py-1 px-2 text-xs" // Reinstated explicit sizing
-                                                              title="Reject this variation" 
-                                                              onClick={() => {
-                                                                  updateVariationDetailsMutation.mutate({ 
-                                                                      status: VariationFeedbackStatus.Rejected 
-                                                                  });
-                                                              }}
-                                                              disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.Rejected}
-                                                          >
-                                                              Reject
-                                                          </Button>
-                                                          {/* Loader */}
-                                                          {updateVariationDetailsMutation.isPending && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground self-center" />} 
-                                                      </div>
-                                                 </div>
-                                                 {/* --- End Variation Status Buttons --- */}
-                                            </div>
-
-                                            {/* Comments Panel */}
-                                            {/* Reduced padding to p-2 */}
-                                            <div className="p-2 flex-grow flex flex-col bg-gray-50 overflow-hidden"> 
-                                                {/* Reduced margin to mb-1 */}
-                                                <h4 className="text-base font-semibold mb-1 shrink-0">Comments</h4>
-                                                {/* Reduced margin to mb-2 */}
-                                                <div className="flex-grow overflow-y-auto mb-2 border-t border-b -mx-2 px-2"> {/* Adjusted negative margin */}
-                                                    {isLoadingComments ? (
-                                                        <div className="flex justify-center items-center h-full">
-                                                            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                                                        </div>
-                                                    ) : errorComments ? (
-                                                        <div className="text-center text-red-500 py-4">Error loading comments.</div>
-                                                    ) : commentsData && commentsData.length > 0 ? (
-                                                        commentsData.map((comment) => (
-                                                            <CommentCard key={comment.id} comment={comment} />
-                                                        ))
-                                                    ) : (
-                                                        <p className="text-sm text-muted-foreground italic text-center py-4">No comments yet.</p>
-                                                    )}
-                                                </div>
-                                                {/* Comment Input Area */} 
-                                                <div className="mt-auto shrink-0"> 
-                                                     <Textarea 
-                                                         placeholder="Add your comment..." 
-                                                         className="mb-2" 
-                                                         value={newCommentText} 
-                                                         onChange={(e) => setNewCommentText(e.target.value)} 
-                                                         rows={3}
-                                                     />
-                                                     <Button 
-                                                         size="sm" 
-                                                         onClick={() => {
-                                                             if (newCommentText.trim()) {
-                                                                 addCommentMutation.mutate(newCommentText, {
-                                                                      onSuccess: () => setNewCommentText('') // Clear input on success
-                                                                 });
-                                                             } else {
-                                                                 toast.info("Comment cannot be empty.");
-                                                             }
-                                                         }}
-                                                         disabled={!currentVariationId || addCommentMutation.isPending} // Disable if no variation or pending
-                                                     >
-                                                         {addCommentMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null} Send
-                                                     </Button>
-                                                </div>
-                                            </div>
+                                <aside className="border-l flex flex-col h-full min-h-0">
+                                    {/* Details Section */}
+                                    <div className="p-2 border-b shrink-0">
+                                        {/* Details content: status, badges, update buttons, etc. */}
+                                        <h4 className="text-base font-semibold mb-1">Details</h4>
+                                        <p className="text-xs text-muted-foreground mb-1">Variation Status:</p>
+                                        <Badge variant={selectedVariation?.status === 'Rejected' ? 'destructive' : 'secondary'} className="mb-2">
+                                          {selectedVariation?.status || 'N/A'}
+                                        </Badge>
+                                        <div className="mt-2 border-t pt-2">
+                                          <h5 className="text-xs font-semibold mb-1 text-muted-foreground uppercase">Update Variation Status</h5>
+                                          <div className="flex flex-row items-center gap-2">
+                                            <Button variant="default" className="bg-green-600 hover:bg-green-700 text-primary-foreground h-auto py-1 px-2 text-xs" title="Approve this variation" onClick={() => { updateVariationDetailsMutation.mutate({ status: VariationFeedbackStatus.Approved }); }} disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.Approved}>Approve</Button>
+                                            <Button variant="default" className="bg-orange-500 hover:bg-orange-600 text-primary-foreground h-auto py-1 px-2 text-xs" title="Request changes for this variation" onClick={() => { updateVariationDetailsMutation.mutate({ status: VariationFeedbackStatus.NeedsChanges }); }} disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.NeedsChanges}>Changes</Button>
+                                            <Button variant="secondary" className="h-auto py-1 px-2 text-xs" title="Set status to Pending Feedback" onClick={() => { updateVariationDetailsMutation.mutate({ status: VariationFeedbackStatus.PendingFeedback }); }} disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.PendingFeedback}>Feedback</Button>
+                                            <Button variant="destructive" className="h-auto py-1 px-2 text-xs" title="Reject this variation" onClick={() => { updateVariationDetailsMutation.mutate({ status: VariationFeedbackStatus.Rejected }); }} disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.Rejected}>Reject</Button>
+                                            {updateVariationDetailsMutation.isPending && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground self-center" />}
+                                          </div>
                                         </div>
-                                    ) : (
-                                        <div className="p-4">No details available.</div>
-                                    )}
+                                    </div>
+                                    {/* Comments List */}
+                                    <div className="flex-grow overflow-y-auto min-h-0 mb-2 border-b px-2 space-y-2 py-2">
+                                        {isLoadingComments ? (
+                                          <div className="flex justify-center items-center h-full">
+                                            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                                          </div>
+                                        ) : errorComments ? (
+                                          <div className="text-center text-red-500 py-4">Error loading comments.</div>
+                                        ) : commentsData && commentsData.length > 0 ? (
+                                          buildCommentTree(commentsData).map((rootComment) => (
+                                            <RenderCommentThread
+                                              key={rootComment.id}
+                                              comment={rootComment as Comment & { children: Comment[] }}
+                                              level={0}
+                                              currentUser={user}
+                                              onUpdate={updateCommentMutation.mutate}
+                                              onDelete={deleteCommentMutation.mutate}
+                                              isUpdating={updateCommentMutation.isPending}
+                                              isDeleting={deleteCommentMutation.isPending}
+                                              onReply={handleReplyClick}
+                                            />
+                                          ))
+                                        ) : (
+                                          <p className="text-sm text-muted-foreground italic text-center py-4">No comments yet.</p>
+                                        )}
+                                    </div>
+                                    {/* Input Area */}
+                                    <div className="shrink-0 bg-gray-50 pt-2">
+                                        <Textarea ref={commentInputRef} placeholder={replyingToCommentId ? "Write your reply..." : "Add your comment..."} className="mb-2" value={newCommentText} onChange={(e) => setNewCommentText(e.target.value)} rows={3} />
+                                        {selectedAttachmentFiles.length > 0 && (
+                                          <div className="mb-2 space-y-1">
+                                            <p className="text-xs font-medium text-muted-foreground">Selected files:</p>
+                                            <ul className="list-none p-0 m-0 max-h-20 overflow-y-auto">
+                                              {selectedAttachmentFiles.map((file, index) => (
+                                                <li key={index} className="flex items-center justify-between text-xs bg-muted/50 px-2 py-1 rounded-md">
+                                                  <span className="truncate mr-2">{file.name}</span>
+                                                  <Button variant="ghost" size="icon" className="h-4 w-4 text-muted-foreground hover:text-destructive shrink-0" onClick={() => handleRemoveSelectedAttachment(file)} title="Remove file">
+                                                    <XCircle className="h-3 w-3" />
+                                                  </Button>
+                                                </li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        )}
+                                        <div className="flex items-center justify-end gap-2">
+                                          <input type="file" ref={commentAttachmentInputRef} onChange={handleCommentAttachmentFilesSelected} multiple className="hidden" />
+                                          <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" title="Attach files" type="button" onClick={() => commentAttachmentInputRef.current?.click()}>
+                                            <Paperclip className="h-4 w-4" />
+                                          </Button>
+                                          <Button size="sm" onClick={() => { if (newCommentText.trim() || selectedAttachmentFiles.length > 0) { addCommentMutation.mutate({ commentText: newCommentText.trim(), parentId: replyingToCommentId, files: selectedAttachmentFiles, onSuccessCallback: () => { setNewCommentText(''); setReplyingToCommentId(null); setSelectedAttachmentFiles([]); } }); } else { toast.info("Comment cannot be empty."); } }} disabled={!currentVariationId || addCommentMutation.isPending}>
+                                            {addCommentMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null} Send
+                                          </Button>
+                                        </div>
+                                    </div>
                                 </aside>
                             </div>
                         </DialogContent>

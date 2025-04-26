@@ -1,0 +1,71 @@
+# Overview
+Design Feedback Web Application is a comprehensive platform built to streamline the design review and feedback process between designers and clients. The application solves the challenge of managing design iterations, collecting precise feedback, and maintaining clear communication throughout the design process.
+
+# Core Features
+
+## Project Management System
+- Hierarchical organization of clients, projects, and design assets
+- Version control system with automatic numbering
+- Stage tagging for different phases
+- Status tracking
+- Bulk upload handling
+
+## Design Upload and Preview System
+- Support for multiple file types
+- Intelligent multi-file upload system
+- Automatic preview generation
+- Format optimization
+- Drag-and-drop interface
+
+## Advanced Feedback System
+- General comments with threading
+- Pinned comments for location-specific feedback
+- Swatch system for color-related feedback
+- Designer notes section
+- Real-time collaboration features
+
+## Comparison Tools
+- Grid view for multiple design comparison
+- Side-by-side comparison
+- Version information display
+- Quick version switching
+
+## Notification System
+- Priority-based notifications
+- In-app notifications
+- Email integration
+- Real-time updates
+
+# Technical Architecture
+
+## Frontend
+- Next.js 14+ with React
+- Tailwind CSS for styling
+- React Query for data fetching
+- Zustand for state management
+
+## Backend (Supabase)
+- Authentication system
+- Real-time database
+- Storage system with CDN
+- Edge Functions
+
+# Development Phases
+
+## Phase 1: Foundation
+- Basic authentication and user roles
+- Project structure and organization
+- Simple design upload and preview
+- Basic comment system
+
+## Phase 2: Core Features
+- Version control system
+- Advanced preview generation
+- Basic feedback tools
+- Initial notification system
+
+## Phase 3: Advanced Features
+- Pinned comments
+- Swatch system
+- Comparison tools
+- Template system 

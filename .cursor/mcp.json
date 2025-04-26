@@ -16,6 +16,15 @@
                 "DEFAULT_SUBTASKS": 5,
                 "DEFAULT_PRIORITY": "medium"
             }
+        },
+        "supabase": {
+          "command": "npx",
+          "args": [
+            "-y",
+            "@supabase/mcp-server-supabase@latest",
+            "--access-token",
+            "sbp_140333f33a311caa5695f7df448b53eb044a7f71"
+          ]
         }
     }
 }

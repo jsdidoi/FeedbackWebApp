@@ -112,6 +112,22 @@ export type NewVariationData = {
     // file_path will be added after upload
 };
 
+// --- Attachment Type ---
+// NEW: Define a type for the attachment data
+export type Attachment = {
+    id: string; // uuid from public.attachments
+    comment_id: string; // uuid from public.comments
+    user_id: string; // uuid from auth.users
+    file_path: string; // text
+    file_name: string; // text
+    file_type: string | null; // text
+    file_size: number | null; // bigint
+    created_at: string; // timestamptz
+    updated_at: string; // timestamptz
+    // Maybe add a thumbnail_url later if generated
+    thumbnail_url?: string | null;
+};
+
 // --- Comment Type ---
 export type Comment = {
     id: string; // uuid
@@ -125,6 +141,8 @@ export type Comment = {
     updated_at: string; // timestamptz
     // Optional: Fetch profile details using the user_id
     profiles?: { display_name?: string; avatar_url?: string; } | null;
+    children?: Comment[]; // For threading UI
+    attachments?: Attachment[]; // Add optional attachments array
 };
 
 // --- Upload Types ---
