@@ -1071,37 +1071,44 @@ export default function ProjectsOverviewPage() {
                  return;
             }
              console.log('Dropped files:', acceptedFiles, 'for project:', selectedProjectId);
-             if (acceptedFiles.length > 0) {
-                // For now, still handling only the first file for the demo upload
-                const file = acceptedFiles[0];
-                const fileId = Date.now().toString(); 
-                setUploadQueue([{ 
-                    id: fileId,
-                    file,
-                    previewUrl: URL.createObjectURL(file),
-                    status: 'pending', 
-                    progress: 0,
-                    uploadStarted: false 
-                }]);
+             
+            acceptedFiles.forEach((file, index) => {
+                const fileId = `${Date.now()}-${index}`;
+                
+                // Add type annotation for prevQueue
+                setUploadQueue((prevQueue: UploadingFileInfo[]) => [
+                    ...prevQueue,
+                    {
+                        id: fileId,
+                        file,
+                        previewUrl: URL.createObjectURL(file),
+                        status: 'pending', 
+                        progress: 0,
+                        uploadStarted: false 
+                    }
+                ]);
+                
                 createDesignFromUploadMutation.mutate({ file, fileId });
-             }
+            });
         },
-        [selectedProjectId, createDesignFromUploadMutation] 
+        // Add setUploadQueue to dependency array
+        [selectedProjectId, createDesignFromUploadMutation, setUploadQueue] 
     );
 
     // --- Implement Cancel Upload Handler ---
     const handleCancelUpload = (id: string) => {
-        setUploadQueue(prevQueue => {
-            const itemToCancel = prevQueue.find(item => item.id === id);
+        // Add type annotation for prevQueue
+        setUploadQueue((prevQueue: UploadingFileInfo[]) => {
+            // Add type annotation for itemToCancel
+            const itemToCancel: UploadingFileInfo | undefined = prevQueue.find(item => item.id === id);
             if (itemToCancel && itemToCancel.xhr) {
                 console.log(`[CancelUpload] Aborting upload for file ID: ${id}`);
-                itemToCancel.xhr.abort(); // Trigger the onabort handler in XHR
-                // The onabort handler in the XHR logic updates the state
-                return prevQueue; // Return original queue, onabort will trigger re-render
+                itemToCancel.xhr.abort();
+                return prevQueue; 
             } else {
                 console.warn(`[CancelUpload] Could not find item or XHR to cancel for ID: ${id}`);
-                // If no XHR, update state directly to cancelled
-                return prevQueue.map(item => 
+                // Add type annotation for item
+                return prevQueue.map((item: UploadingFileInfo) => 
                     item.id === id && (item.status === 'uploading' || item.status === 'pending') 
                         ? { ...item, status: 'cancelled', progress: 0, xhr: undefined } 
                         : item
