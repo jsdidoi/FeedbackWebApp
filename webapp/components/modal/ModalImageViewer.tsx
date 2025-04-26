@@ -64,7 +64,7 @@ export const ModalImageViewer = ({ filePath }: ModalImageViewerProps) => {
   }, [supabase, filePath]); // Re-run when supabase client or filePath changes
 
   return (
-    <div className="relative aspect-video w-full bg-muted rounded flex items-center justify-center overflow-hidden min-h-[300px]"> 
+    <div className="relative w-full h-full flex items-center justify-center min-h-[300px]"> 
       {isLoading ? (
         <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
       ) : error ? (
@@ -77,8 +77,7 @@ export const ModalImageViewer = ({ filePath }: ModalImageViewerProps) => {
           src={imageUrl}
           alt={filePath ? `Preview for ${filePath.split('/').pop()}` : 'Image Preview'}
           fill
-          sizes="(max-width: 768px) 100vw, (max-width: 1280px) 50vw, 33vw" // Adjust sizes based on modal width
-          style={{ objectFit: 'contain' }} // Use 'contain' to see the whole image
+          style={{ objectFit: 'contain' }}
           priority
           onError={() => setError("Failed to load image.")}
         />

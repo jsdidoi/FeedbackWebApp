@@ -2068,48 +2068,9 @@ export default function ProjectsOverviewPage() {
                                         {/* --- End of Variation Section --- */} 
                                     </nav>
 
-                                    {/* Image Viewer Area - Added relative positioning and group */} 
-                                    {/* Reduced padding to p-2 */}
-                                    <div className="p-2 flex items-center justify-center overflow-hidden h-full relative group/imageViewer"> 
-                                         {isLoadingDesignDetails ? (
-                                             <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
-                                         ) : errorDesignDetails ? (
-                                             <div className="text-red-600">Error loading image area.</div>
-                                         ) : designDetailsData ? (
-                                             <ModalImageViewer filePath={selectedVariation?.file_path} />
-                                         ) : (
-                                             <div>No image data.</div>
-                                         )}
-                                         {/* Replace Button Overlay - Appears on hover */} 
-                                         {selectedVariation?.file_path && (
-                                             <Button 
-                                                 variant="outline" 
-                                                 size="icon" 
-                                                 className="absolute bottom-2 right-2 z-10 opacity-0 group-hover/imageViewer:opacity-80 hover:!opacity-100 transition-opacity bg-background/70 hover:bg-background/90"
-                                                 onClick={handleReplaceVariationClick}
-                                                 title="Replace Variation Image"
-                                                 disabled={replaceVariationFileMutation.isPending} // Disable while replacing
-                                             >
-                                                 {replaceVariationFileMutation.isPending 
-                                                    ? <Loader2 className="h-4 w-4 animate-spin" />
-                                                    : <RefreshCw className="h-4 w-4" /> // Changed Icon
-                                                 } 
-                                             </Button>
-                                         )}
-                                         {/* Delete Button Overlay */} 
-                                         <Button 
-                                             variant="destructive" // Destructive variant for delete
-                                             size="icon" 
-                                             className="absolute bottom-2 right-12 z-10 opacity-0 group-hover/imageViewer:opacity-80 hover:!opacity-100 transition-opacity bg-destructive/70 hover:bg-destructive/90 p-1.5" // Adjusted position (right-12), added padding
-                                             onClick={handleDeleteVariationClick}
-                                             title="Delete Variation"
-                                             disabled={deleteVariationMutation.isPending} // Disable while deleting
-                                         >
-                                             {deleteVariationMutation.isPending 
-                                                ? <Loader2 className="h-4 w-4 animate-spin" />
-                                                : <Trash2 className="h-4 w-4" /> // Trash icon
-                                             } 
-                                         </Button>
+                                    {/* Image Viewer Area - Change padding from p-6 to p-8 */}
+                                    <div className="p-8 flex items-start justify-center overflow-hidden h-full relative group/imageViewer">
+                                      <ModalImageViewer filePath={selectedVariation?.file_path} />
                                     </div>
                                 </div>
                                 
@@ -2160,8 +2121,8 @@ export default function ProjectsOverviewPage() {
                                           <p className="text-sm text-muted-foreground italic text-center py-4">No comments yet.</p>
                                         )}
                                     </div>
-                                    {/* Input Area */}
-                                    <div className="shrink-0 bg-gray-50 pt-2">
+                                    {/* Input Area - Add px-4 and pb-2 */}
+                                    <div className="shrink-0 bg-gray-50 pt-2 px-4 pb-2">
                                         <Textarea ref={commentInputRef} placeholder={replyingToCommentId ? "Write your reply..." : "Add your comment..."} className="mb-2" value={newCommentText} onChange={(e) => setNewCommentText(e.target.value)} rows={3} />
                                         {selectedAttachmentFiles.length > 0 && (
                                           <div className="mb-2 space-y-1">
