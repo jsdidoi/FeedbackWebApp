@@ -1263,11 +1263,12 @@ export default function ProjectsOverviewPage() {
             toast.error("Cannot delete: No variation selected.");
             return;
         }
-        const variationLetter = selectedVariation?.variation_letter || 'this variation'; // Get letter for prompt
-        if (window.confirm(`Are you sure you want to permanently delete variation ${variationLetter}? This cannot be undone.`)) {
-            console.log(`[DeleteVar] Confirmed deletion for variation ${currentVariationId}`);
-            deleteVariationMutation.mutate(); // No payload needed for the delete mutation itself
-        }
+        // Confirmation is now handled by the AlertDialog component that calls this.
+        // const variationLetter = selectedVariation?.variation_letter || 'this variation'; 
+        // if (window.confirm(`Are you sure you want to permanently delete variation ${variationLetter}? This cannot be undone.`)) { 
+        console.log(`[DeleteVar] Executing deletion for variation ${currentVariationId}`);
+        deleteVariationMutation.mutate(); // Directly call the mutation
+        // }
     };
 
     // --- NEW: Handlers for Title Editing ---
