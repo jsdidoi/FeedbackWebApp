@@ -606,7 +606,8 @@ const useUpdateProjectDetails = (projectId: string) => {
             toast.success(message);
 
             // Invalidate queries to refetch updated data
-            queryClient.invalidateQueries({ queryKey: ['project', selectedProjectId] }); // Specific project details
+            // FIX: Use projectId from hook scope instead of component state
+            queryClient.invalidateQueries({ queryKey: ['project', projectId] }); // Specific project details
             queryClient.invalidateQueries({ queryKey: ['projects', 'all'] }); // List for sidebar
         },
         onError: (error) => {
@@ -928,7 +929,8 @@ export default function ProjectsOverviewPage() {
         selectedProjectId || '',
         // Provide setters to update state on success
         setCurrentVersionId, 
-        setCurrentVariationId 
+        setCurrentVariationId,
+        setUploadQueue // FIX: Add missing 5th argument
     );
     // NEW: Instantiate add variations to version hook
     const addVariationsToVersionMutation = useAddVariationsToVersion(
