@@ -38,6 +38,22 @@ interface CommentCardProps {
   numReplies?: number;
 }
 
+// Utility to render mentions with highlight
+function renderWithMentions(text: string) {
+  return text.split(/(@\w+)/g).map((part, i) =>
+    part.startsWith('@') ? (
+      <span
+        key={i}
+        className="text-blue-600 bg-blue-100 rounded px-1 font-semibold hover:underline cursor-pointer"
+      >
+        {part}
+      </span>
+    ) : (
+      part
+    )
+  );
+}
+
 export const CommentCard = ({ 
     comment, 
     currentUser, 
@@ -214,7 +230,7 @@ export const CommentCard = ({
               <> {/* Wrap content and attachments */}
                   {comment.content && (
                       <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                          {comment.content}
+                          {renderWithMentions(comment.content)}
                       </p>
                   )}
                   {/* UPDATED: Display Attachments (with Thumbnails) */}

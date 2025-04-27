@@ -760,6 +760,38 @@ const RenderCommentThread: React.FC<RenderCommentThreadProps> = ({
     );
 };
 
+// --- Debounce Utility --- 
+// Generic debounce function
+function debounce<T extends (...args: any[]) => any>(func: T, wait: number): (...args: Parameters<T>) => void {
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    return function executedFunction(...args: Parameters<T>) {
+        const later = () => {
+            timeout = null;
+            func(...args);
+        };
+        if (timeout !== null) {
+            clearTimeout(timeout);
+        }
+        timeout = setTimeout(later, wait);
+    };
+}
+
+// Utility to render mentions with highlight
+function renderWithMentions(text: string) {
+  return text.split(/(@\w+)/g).map((part, i) =>
+    part.startsWith('@') ? (
+      <span
+        key={i}
+        className="text-blue-600 bg-blue-100 rounded px-1 font-semibold hover:underline cursor-pointer"
+      >
+        {part}
+      </span>
+    ) : (
+      part
+    )
+  );
+}
+
 export default function ProjectsOverviewPage() {
     const { supabase, user } = useAuth(); // Add user here
     const params = useParams();
@@ -799,7 +831,7 @@ export default function ProjectsOverviewPage() {
     const [mentionQuery, setMentionQuery] = useState<string>('');
     const [mentionableUsers, setMentionableUsers] = useState<{ id: string; display_name: string; }[]>([]);
     const [isMentionDropdownOpen, setIsMentionDropdownOpen] = useState<boolean>(false);
-    const [mentionDropdownPosition, setMentionDropdownPosition] = useState<{ top: number; left: number } | null>(null);
+    const [mentionDropdownPosition, setMentionDropdownPosition] = useState<{ bottom: number; left: number } | null>(null);
     const [isFetchingMentions, setIsFetchingMentions] = useState<boolean>(false);
 
     // --- Refs for hidden file inputs ---
@@ -808,6 +840,8 @@ export default function ProjectsOverviewPage() {
     const replaceVariationFileInputRef = useRef<HTMLInputElement>(null);
     // NEW: Ref for comment attachment file input
     const commentAttachmentInputRef = useRef<HTMLInputElement>(null);
+    // NEW: Ref for the scrollable comment container
+    const commentScrollContainerRef = useRef<HTMLElement>(null); 
 
     // --- Form Hook for Add Design Dialog (Moved to Top Level) ---
     const {
@@ -1053,6 +1087,24 @@ export default function ProjectsOverviewPage() {
         };
     }, [supabase, queryClient, currentVariationId]); // Dependencies
 
+    // --- NEW: Effect to reposition mention dropdown on resize AND window scroll --- 
+    useEffect(() => {
+        const recalculatePosition = () => {
+            if (isMentionDropdownOpen && commentInputRef.current) { 
+                const textarea = commentInputRef.current;
+                const rect = textarea.getBoundingClientRect();
+                setMentionDropdownPosition({ bottom: window.innerHeight - rect.top, left: rect.left });
+            }
+        };
+        const debouncedRecalculate = debounce(recalculatePosition, 100);
+        window.addEventListener('resize', debouncedRecalculate);
+        window.addEventListener('scroll', debouncedRecalculate, true);
+        return () => {
+            window.removeEventListener('resize', debouncedRecalculate);
+            window.removeEventListener('scroll', debouncedRecalculate, true);
+        };
+    }, [isMentionDropdownOpen]);
+
     // --- NEW: Refetch comments on window focus ---
     useEffect(() => {
         const handleFocus = () => {
@@ -1107,12 +1159,12 @@ export default function ProjectsOverviewPage() {
                 setUploadQueue((prevQueue: UploadingFileInfo[]) => [
                     ...prevQueue,
                     {
-                        id: fileId,
-                        file,
-                        previewUrl: URL.createObjectURL(file),
-                        status: 'pending', 
-                        progress: 0,
-                        uploadStarted: false 
+                    id: fileId,
+                    file,
+                    previewUrl: URL.createObjectURL(file),
+                    status: 'pending', 
+                    progress: 0,
+                    uploadStarted: false 
                     }
                 ]);
                 
@@ -1565,31 +1617,32 @@ export default function ProjectsOverviewPage() {
     ];
 
     // --- NEW: @Mention Logic --- 
-    const triggerMentionFetch = async (query: string) => {
-        setIsFetchingMentions(true);
-        console.log("[Mentions] Fetching users for query:", query);
-        const users = await fetchMentionableUsers(supabase);
-        // Basic filter - can be improved later (e.g., fuzzy search)
-        const filteredUsers = users.filter(u => 
-            u.display_name.toLowerCase().includes(query.toLowerCase())
-        );
-        setMentionableUsers(filteredUsers);
-        setIsFetchingMentions(false);
-        // Only open dropdown if results found (or maybe always open if query exists?)
-        setIsMentionDropdownOpen(filteredUsers.length > 0 || query.length > 0); 
-        // TODO: Calculate dropdown position based on cursor
-        // For now, just log
-        console.log("[Mentions] Found users:", filteredUsers);
-        const textarea = commentInputRef.current;
-        if (textarea) {
-            // Placeholder for position calculation
-            // const { top, left } = textarea.getBoundingClientRect(); 
-            // const caretPosition = textarea.selectionStart;
-            // Calculate position based on caret - complex!
-            // setMentionDropdownPosition({ top: top + 20, left: left }); 
-            setMentionDropdownPosition({ top: 200, left: 200 }); // Dummy position for now
-        }
-    };
+  
+
+        // --- Calculate position based on TEXTAREA (relative to viewport) --- 
+        const triggerMentionFetch = async (query: string) => {
+            setIsFetchingMentions(true);
+            console.log("[Mentions] Fetching users for query:", query);
+            const users = await fetchMentionableUsers(supabase);
+            const filteredUsers = users.filter(u => 
+                u.display_name.toLowerCase().includes(query.toLowerCase())
+            );
+            setMentionableUsers(filteredUsers);
+            setIsFetchingMentions(false);
+            
+            const shouldOpen = filteredUsers.length > 0 || query.length > 0;
+            setIsMentionDropdownOpen(shouldOpen); 
+    
+            // --- Always position above the textarea --- 
+            const textarea = commentInputRef.current;
+            if (textarea) {
+                const rect = textarea.getBoundingClientRect(); 
+                setMentionDropdownPosition({ bottom: window.innerHeight - rect.top, left: rect.left });
+            } else {
+                console.warn("[Mentions] Could not get TEXTAREA ref to calculate viewport position."); 
+                setIsMentionDropdownOpen(false); // Close dropdown if ref is lost
+            }
+        };
 
     // NEW: Handler for comment input change (with @mention detection)
     const handleCommentInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -2379,15 +2432,15 @@ export default function ProjectsOverviewPage() {
                                                     {/* Replace Button */}
                                                     <Tooltip>
                                                         <TooltipTrigger asChild>
-                                                            <Button 
+                                             <Button 
                                                                 variant="ghost"
-                                                                size="icon"
+                                                 size="icon" 
                                                                 className="h-7 w-7"
-                                                                onClick={handleReplaceVariationClick}
+                                                 onClick={handleReplaceVariationClick}
                                                                 disabled={replaceVariationFileMutation.isPending}
-                                                            >
+                                             >
                                                                 {replaceVariationFileMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                                                            </Button>
+                                             </Button>
                                                         </TooltipTrigger>
                                                         <TooltipContent side="top">
                                                             <p>Replace File</p>
@@ -2400,15 +2453,15 @@ export default function ProjectsOverviewPage() {
                                                             <AlertDialogTrigger asChild>
                                                                 {/* Need TooltipTrigger *inside* AlertDialogTrigger for positioning */}
                                                                 <TooltipTrigger asChild>
-                                                                    <Button 
+                                         <Button 
                                                                         variant="ghost"
-                                                                        size="icon"
+                                             size="icon" 
                                                                         className="h-7 w-7 text-destructive hover:text-destructive/90"
                                                                         disabled={deleteVariationMutation.isPending}
                                                                         onClick={(e) => e.stopPropagation()} // Prevent triggering modal close maybe?
                                                                     >
                                                                         {deleteVariationMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                                                                    </Button>
+                                         </Button>
                                                                 </TooltipTrigger>
                                                             </AlertDialogTrigger>
                                                             <AlertDialogContent>
@@ -2441,7 +2494,7 @@ export default function ProjectsOverviewPage() {
                                 </div>
                                 
                                 {/* Right Side (Details & Comments) */} 
-                                <aside className="border-l flex flex-col h-full min-h-0">
+                                <aside ref={commentScrollContainerRef} className="border-l flex flex-col h-full min-h-0"> {/* <-- ASSIGN REF HERE */} 
                                             {/* Details Section */} 
                                             <div className="p-2 border-b shrink-0"> 
                                         {/* Details content: status, badges, update buttons, etc. */}
@@ -2457,9 +2510,9 @@ export default function ProjectsOverviewPage() {
                                             <Button variant="default" className="bg-orange-500 hover:bg-orange-600 text-primary-foreground h-auto py-1 px-2 text-xs" title="Request changes for this variation" onClick={() => { updateVariationDetailsMutation.mutate({ status: VariationFeedbackStatus.NeedsChanges }); }} disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.NeedsChanges}>Changes</Button>
                                             <Button variant="secondary" className="h-auto py-1 px-2 text-xs" title="Set status to Pending Feedback" onClick={() => { updateVariationDetailsMutation.mutate({ status: VariationFeedbackStatus.PendingFeedback }); }} disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.PendingFeedback}>Feedback</Button>
                                             <Button variant="destructive" className="h-auto py-1 px-2 text-xs" title="Reject this variation" onClick={() => { updateVariationDetailsMutation.mutate({ status: VariationFeedbackStatus.Rejected }); }} disabled={!currentVariationId || updateVariationDetailsMutation.isPending || selectedVariation?.status === VariationFeedbackStatus.Rejected}>Reject</Button>
-                                            {updateVariationDetailsMutation.isPending && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground self-center" />}
-                                          </div>
-                                        </div>
+                                                          {updateVariationDetailsMutation.isPending && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground self-center" />} 
+                                                      </div>
+                                            </div>
 
                                         
 
@@ -2491,58 +2544,59 @@ export default function ProjectsOverviewPage() {
                                                     )}
                                                 </div>
                                     {/* Input Area - Add px-4 and pb-2 */}
-                                    <div className="shrink-0 bg-gray-50 pt-2 px-4 pb-2">
-                                        <Textarea 
-                                            ref={commentInputRef} 
-                                            placeholder={replyingToCommentId ? "Write your reply..." : "Add your comment..."} 
-                                            className="mb-2" 
-                                            value={newCommentText} 
-                                            // onChange={(e) => setNewCommentText(e.target.value)}
-                                            onChange={handleCommentInputChange} // NEW: Use dedicated handler
-                                            rows={3} 
-                                        />
-                                         {/* --- NEW: @Mention Dropdown --- */}
-                                        {isMentionDropdownOpen && mentionDropdownPosition && (
-                                            <div 
-                                                className="absolute z-20 w-48 bg-background border rounded-md shadow-lg max-h-40 overflow-y-auto"
-                                                style={{ 
-                                                    top: `${mentionDropdownPosition.top}px`, 
-                                                    left: `${mentionDropdownPosition.left}px` 
-                                                }}
-                                            >
-                                                {isFetchingMentions ? (
-                                                    <div className="p-2 text-sm text-muted-foreground italic">Loading...</div>
-                                                ) : mentionableUsers.length > 0 ? (
-                                                    mentionableUsers.map(user => (
-                                                        <button 
-                                                            key={user.id} 
-                                                            className="block w-full text-left px-3 py-1.5 text-sm hover:bg-muted"
-                                                            onClick={() => handleMentionSelect(user.display_name)}
+                                    <div className="shrink-0 bg-gray-50 pt-2 px-4 pb-2 relative"> {/* <-- ADDED relative CLASS HERE */}
+                                                     <div className="relative"> {/* Make this the positioning context */}
+                                                      <Textarea 
+                                                        ref={commentInputRef} 
+                                                        placeholder={replyingToCommentId ? "Write your reply..." : "Add your comment..."} 
+                                                        className="mb-2" 
+                                                        value={newCommentText} 
+                                                        onChange={handleCommentInputChange} // NEW: Use dedicated handler
+                                                        rows={3}
+                                                      />
+                                                      {/* --- @Mention Dropdown (NO PORTAL) --- */}
+                                                      {isMentionDropdownOpen && commentInputRef.current && (
+                                                        <div
+                                                          className="absolute z-50 w-48 bg-background border rounded-md shadow-lg max-h-40 overflow-y-auto"
+                                                          style={{
+                                                            left: commentInputRef.current.offsetLeft,
+                                                            bottom: `calc(100% - ${commentInputRef.current.offsetTop}px)`
+                                                          }}
                                                         >
-                                                            {user.display_name}
-                                                        </button>
-                                                    ))
-                                                ) : (
-                                                    <div className="p-2 text-sm text-muted-foreground italic">No users found</div>
-                                                )}
-                                            </div>
-                                        )}
-                                         {/* --- End @Mention Dropdown --- */}
-                                         {selectedAttachmentFiles.length > 0 && (
-                                            <div className="mb-2 space-y-1">
-                                                <p className="text-xs font-medium text-muted-foreground">Selected files:</p>
+                                                          {isFetchingMentions ? (
+                                                            <div className="p-2 text-sm text-muted-foreground italic">Loading...</div>
+                                                          ) : mentionableUsers.length > 0 ? (
+                                                            mentionableUsers.map(user => (
+                                                              <button
+                                                                key={user.id}
+                                                                className="block w-full text-left px-3 py-1.5 text-sm hover:bg-muted"
+                                                                onClick={() => handleMentionSelect(user.display_name)}
+                                                              >
+                                                                {renderWithMentions(user.display_name)}
+                                                              </button>
+                                                            ))
+                                                          ) : (
+                                                            <div className="p-2 text-sm text-muted-foreground italic">No users found</div>
+                                                          )}
+                                                        </div>
+                                                      )}
+                                                      {/* --- End @Mention Dropdown --- */}
+                                                    </div>
+                                                     {selectedAttachmentFiles.length > 0 && (
+                                                       <div className="mb-2 space-y-1">
+                                                           <p className="text-xs font-medium text-muted-foreground">Selected files:</p>
                                                 <ul className="list-none p-0 m-0 max-h-20 overflow-y-auto">
-                                                    {selectedAttachmentFiles.map((file, index) => (
-                                                        <li key={index} className="flex items-center justify-between text-xs bg-muted/50 px-2 py-1 rounded-md">
-                                                            <span className="truncate mr-2">{file.name}</span>
+                                                               {selectedAttachmentFiles.map((file, index) => (
+                                                                   <li key={index} className="flex items-center justify-between text-xs bg-muted/50 px-2 py-1 rounded-md">
+                                                                       <span className="truncate mr-2">{file.name}</span>
                                                             <Button variant="ghost" size="icon" className="h-4 w-4 text-muted-foreground hover:text-destructive shrink-0" onClick={() => handleRemoveSelectedAttachment(file)} title="Remove file">
-                                                                <XCircle className="h-3 w-3" />
-                                                            </Button>
-                                                        </li>
-                                                    ))}
-                                                </ul>
-                                            </div>
-                                         )}
+                                                                           <XCircle className="h-3 w-3" />
+                                                                       </Button>
+                                                                   </li>
+                                                               ))}
+                                                           </ul>
+                                                       </div>
+                                                     )}
                                                      <div className="flex items-center justify-end gap-2">
                                           <input type="file" ref={commentAttachmentInputRef} onChange={handleCommentAttachmentFilesSelected} multiple className="hidden" />
                                           <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" title="Attach files" type="button" onClick={() => commentAttachmentInputRef.current?.click()}>
