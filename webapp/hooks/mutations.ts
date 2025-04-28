@@ -77,13 +77,16 @@ export const useAddVersionWithVariations = (
     const { supabase } = useAuth();
     const queryClient = useQueryClient();
     const BUCKET_NAME = 'design-variations'; // Define bucket name
+    const CONCURRENCY_LIMIT = 3; // Restore concurrency limit
 
     return useMutation({
         mutationFn: async ({ files }: { files: File[] }) => {
+            // Removed entry log
             if (!supabase) throw new Error("Supabase client not available");
             if (!designId) throw new Error("Design ID is required");
+            if (!files || files.length === 0) throw new Error("No files provided");
 
-            // Get the latest version number
+            // --- 1. Get the latest version number ---
             const { data: versions, error: versionsError } = await supabase
                 .from('versions')
                 .select('version_number')
@@ -92,251 +95,409 @@ export const useAddVersionWithVariations = (
                 .limit(1);
 
             if (versionsError) throw new Error(`Failed to get latest version number: ${versionsError.message}`);
-
             const nextVersionNumber = versions && versions.length > 0 ? versions[0].version_number + 1 : 1;
 
-            // Create new version
+            // --- 2. Create new version record ---
             const { data: newVersion, error: versionError } = await supabase
                 .from('versions')
                 .insert({
                     design_id: designId,
                     version_number: nextVersionNumber,
                     status: 'Work in Progress',
-                    stage: DesignStage.Sketch // Default to Sketch stage
+                    stage: DesignStage.Sketch
                 })
                 .select()
                 .single();
 
             if (versionError || !newVersion) {
-                throw new Error(`Failed to create version: ${versionError?.message}`);
+                throw new Error(`Failed to create version: ${versionError?.message || 'Unknown error'}`);
             }
 
-            // --- Implement Concurrency Control ---
-            const CONCURRENCY_LIMIT = 3;
-            let activePromises: Promise<Variation>[] = [];
-            const results: PromiseSettledResult<Variation>[] = [];
-            let fileIndex = 0;
+            // --- 3. Sequentially create all variation DB records ---
+            const createdVariations: Variation[] = [];
+            try {
+            for (let i = 0; i < files.length; i++) {
+                    const variationLetter = String.fromCharCode(65 + i); // 'A', 'B', 'C', ...
+                    const { data: createdVar, error: variationCreateError } = await supabase
+                    .from('variations')
+                        .insert({ version_id: newVersion.id, variation_letter: variationLetter, status: VariationFeedbackStatus.PendingFeedback })
+                    .select()
+                    .single();
 
-            const processFile = async (file: File, index: number): Promise<Variation> => {
-                const variationLetter = String.fromCharCode(65 + index);
-                let newVariation: Variation | null = null;
-                const fileId = `${newVersion.id}-${variationLetter}-${Date.now()}`;
-                let filePath = '';
+                    if (variationCreateError || !createdVar) {
+                        // If creating a record fails, we should ideally roll back or mark the version as failed
+                        throw new Error(`Failed to create DB record for variation ${variationLetter}: ${variationCreateError?.message}`);
+                    }
+                    createdVariations.push(createdVar);
+                }
+            } catch (error: any) {
+                 // Clean up already created version if variation creation fails? Or let user handle it?
+                 // For now, just re-throw
+                 console.error("Error during sequential variation record creation:", error);
+                 // Optionally delete the version created above before throwing
+                 // await supabase.from('versions').delete().eq('id', newVersion.id); 
+                 throw error; 
+            }
+
+            // --- 4. Concurrently upload files and update records ---
+            const results: PromiseSettledResult<Variation>[] = []; // Keep for consistency, but populated differently
+            const allUploadPromises: Promise<Variation>[] = []; // Store all raw promises
+            let activePromises: Promise<any>[] = [];
+
+            const processFileUploadAndUpdate = async (file: File, variationRecord: Variation): Promise<Variation> => {
+                const fileId = `${variationRecord.version_id}-${variationRecord.variation_letter}-${Date.now()}`;
+                let finalFilePath = '';
+                const previewUrl = URL.createObjectURL(file); // Create preview URL
+
+                // Add to queue immediately
+                setUploadQueue(prev => [
+                    ...prev, 
+                    { id: fileId, file, previewUrl, status: 'pending', progress: 0, uploadStarted: false, xhr: undefined }
+                ]);
 
                 try {
-                    // Create variation record
-                    const { data: createdVar, error: variationError } = await supabase
-                        .from('variations')
-                        .insert({ version_id: newVersion.id, variation_letter: variationLetter, status: VariationFeedbackStatus.PendingFeedback })
-                        .select().single();
-                    if (variationError || !createdVar) throw new Error(`Failed to create variation ${variationLetter}: ${variationError?.message}`);
-                    newVariation = createdVar;
+                    // a. Prepare for Upload
+                    finalFilePath = `projects/${projectId}/designs/${designId}/versions/${variationRecord.version_id}/variations/${variationRecord.id}/${file.name}`;
+                    const { data: signedUrlData, error: signedUrlError } = await supabase.storage
+                        .from(BUCKET_NAME)
+                        .createSignedUploadUrl(finalFilePath);
 
-                    // Add to queue (initial state)
-                    setUploadQueue(prev => [...prev, { id: fileId, file, previewUrl: URL.createObjectURL(file), status: 'pending', progress: 0, uploadStarted: false, xhr: undefined }]);
-                    
-                    // Mark as uploading in queue
-                    setUploadQueue(prev => prev.map(f => f.id === fileId ? { ...f, status: 'uploading', uploadStarted: true } : f));
-                    
-                    if (!newVariation) throw new Error(`Variation record creation failed unexpectedly for ${variationLetter}`);
-
-                    // Upload file via XHR
-                    filePath = `projects/${projectId}/designs/${designId}/versions/${newVersion.id}/variations/${newVariation.id}/${file.name}`;
-                    const { data: signedUrlData, error: signedUrlError } = await supabase.storage.from(BUCKET_NAME).createSignedUploadUrl(filePath);
-                    if (signedUrlError) throw new Error(`Failed to get signed URL: ${signedUrlError.message}`);
-                    if (!signedUrlData?.signedUrl) throw new Error("No signed URL returned.");
+                    if (signedUrlError || !signedUrlData?.signedUrl) {
+                        throw new Error(`Failed to get signed upload URL for ${variationRecord.variation_letter}: ${signedUrlError?.message || 'No URL returned'}`);
+                    }
                     const signedUrl = signedUrlData.signedUrl;
 
+                    // b. Perform XHR Upload with Progress
                     await new Promise<void>((resolve, reject) => {
                         const xhr = new XMLHttpRequest();
-                        setUploadQueue(prev => prev.map(f => f.id === fileId ? { ...f, xhr: xhr } : f));
+                        setUploadQueue(prev => prev.map(f => f.id === fileId ? { ...f, xhr: xhr, status: 'uploading', uploadStarted: true, progress: 0 } : f));
+
                         xhr.open('PUT', signedUrl, true);
                         xhr.setRequestHeader('Content-Type', file.type);
+
                         xhr.upload.onprogress = (event) => {
                             if (event.lengthComputable) {
                                 const progress = Math.round((event.loaded / event.total) * 100);
-                                setUploadQueue(prev => prev.map(f => f.id === fileId ? { ...f, progress: progress, status: 'uploading' } : f));
+                                setUploadQueue(prev => prev.map(f => f.id === fileId ? { ...f, progress: progress } : f));
                             }
                         };
-                        xhr.onload = () => (xhr.status >= 200 && xhr.status < 300) ? resolve() : reject(new Error(`Upload failed: ${xhr.statusText || 'XHR Error'}`));
-                        xhr.onerror = () => reject(new Error('Upload failed: Network error'));
+                        xhr.onload = () => (xhr.status >= 200 && xhr.status < 300) ? resolve() : reject(new Error(`Storage upload failed: ${xhr.statusText || 'XHR Error'} (Status ${xhr.status})`));
+                        xhr.onerror = () => reject(new Error('Storage upload failed: Network error'));
                         xhr.onabort = () => {
                             setUploadQueue(prev => prev.map(f => f.id === fileId ? { ...f, status: 'cancelled', progress: 0 } : f));
-                            resolve(); // Resolve on abort
+                            reject(new Error('Upload cancelled')); // Treat abort as an error for the promise chain
                         };
                         xhr.send(file);
                     });
 
-                    if (!newVariation) throw new Error(`Variation record lost for ${variationLetter} before final update.`);
+                    // c. Update Variation Record with File Path
+                const { data: updatedVariation, error: updateError } = await supabase
+                    .from('variations')
+                        .update({ file_path: finalFilePath, updated_at: new Date().toISOString() })
+                        .eq('id', variationRecord.id)
+                    .select()
+                    .single();
 
-                    // Update variation with file path
-                    const { data: updatedVariation, error: updateError } = await supabase.from('variations').update({ file_path: filePath }).eq('id', newVariation.id).select().single();
-                    if (updateError) throw new Error(`Failed to update variation ${variationLetter} with file path: ${updateError.message}`);
-                    
+                    if (updateError || !updatedVariation) {
+                        throw new Error(`Failed to link file path for variation ${variationRecord.variation_letter}: ${updateError?.message}`);
+                    }
+
+                    // d. Success for this file: Remove from queue and return result
+                    setUploadQueue(prev => prev.filter(f => f.id !== fileId)); 
+                    URL.revokeObjectURL(previewUrl); // Clean up blob URL
                     return updatedVariation;
+
                 } catch (error: any) {
-                    console.error(`Error processing file ${file.name} for variation ${variationLetter}:`, error);
-                    setUploadQueue(prev => prev.map(f => f.id === fileId ? { ...f, status: 'error', error: error.message || 'Failed', progress: 0 } : f));
-                    // Re-throw the error to be caught by the concurrency manager
-                    throw error; 
+                    console.error(`[AddVersion] Failed processing upload/update for variation ${variationRecord.variation_letter}:`, error);
+                    setUploadQueue(prev => prev.map(f => 
+                        f.id === fileId ? { ...f, status: 'error', error: error.message || 'Processing failed', progress: 0 } : f
+                    ));
+                    URL.revokeObjectURL(previewUrl); // Clean up blob URL even on error
+                    throw error; // Re-throw to be caught by the concurrency controller
                 }
             };
 
-            const fileIterator = files.entries(); // Use entries to get index
-            let nextFile = fileIterator.next();
+            // Concurrency Management Loop
+            const fileIterator = files.entries(); 
+            let currentFileJobIndex = 0; 
+            let nextFileJob = fileIterator.next();
 
-            while (fileIndex < files.length || activePromises.length > 0) {
-                while (activePromises.length < CONCURRENCY_LIMIT && !nextFile.done) {
-                    const [currentIndex, currentFile] = nextFile.value;
-                    const promise = processFile(currentFile, currentIndex)
-                        .then(result => {
-                            results.push({ status: 'fulfilled', value: result });
-                            return result; // Return value for removal logic
-                        })
-                        .catch(error => {
-                            results.push({ status: 'rejected', reason: error });
-                            return error; // Return error for removal logic
+            while (currentFileJobIndex < files.length || activePromises.length > 0) {
+                while (activePromises.length < CONCURRENCY_LIMIT && !nextFileJob.done) {
+                    const [originalIndex, fileToProcess] = nextFileJob.value;
+                    const correspondingVariation = createdVariations[originalIndex]; 
+
+                    if (!correspondingVariation) {
+                        console.error(`Consistency error: No pre-created variation found for file index ${originalIndex}`);
+                        // Handle error: maybe push a rejected result immediately
+                        currentFileJobIndex++;
+                        nextFileJob = fileIterator.next();
+                        continue; 
+                    }
+
+                    // Create the promise
+                    const uploadPromise = processFileUploadAndUpdate(fileToProcess, correspondingVariation);
+                    allUploadPromises.push(uploadPromise); // Store the raw promise
+                    
+                    // Create a wrapped promise *only* for managing active slots
+                    const wrappedPromise = uploadPromise
+                        .catch(() => {}) // Prevent unhandled rejection for the wrapper
+                        .finally(() => {
+                            activePromises = activePromises.filter(p => p !== wrappedPromise);
                         });
-                    
-                    // Add the promise wrapper (that always resolves) to activePromises
-                    const wrappedPromise = promise.finally(() => {
-                         // Remove the wrapped promise itself from activePromises when settled
-                        activePromises = activePromises.filter(p => p !== wrappedPromise);
-                    });
                     activePromises.push(wrappedPromise);
-                    
-                    fileIndex++;
-                    nextFile = fileIterator.next();
+
+                    currentFileJobIndex++;
+                    nextFileJob = fileIterator.next();
                 }
 
-                // Wait for at least one promise to settle if the limit is reached or no more files to queue
                 if (activePromises.length > 0) {
+                     // Wait for *any* active promise to finish to free up a slot
+                     // We don't need to collect results here anymore
                     await Promise.race(activePromises);
                 } else {
-                    // Break if no more files and no active promises
-                    break;
+                    // Exit loop if no more files to start and no promises are active
+                    break; 
                 }
             }
-            // --- End Concurrency Control ---
 
-            // Process results (similar to Promise.allSettled)
-            const successfulVariations = results
+            // --- 5. Wait for all uploads and process results ---
+            const finalResults = await Promise.allSettled(allUploadPromises);
+
+            const successfulVariations = finalResults
                 .filter((result): result is PromiseFulfilledResult<Variation> => result.status === 'fulfilled')
                 .map(result => result.value);
+            
+            const failedCount = finalResults.length - successfulVariations.length;
+            // Corrected failed count calculation
+            console.log(`[AddVersion] Finished processing batch. Success: ${successfulVariations.length}, Failed: ${failedCount}`);
 
-            const failedCount = results.length - successfulVariations.length;
-            if (failedCount > 0) {
-                console.warn(`[AddVersion] ${failedCount} variation(s) failed to process.`);
-            }
-
-            // Return the new version and successfully created variations
-            return { version: newVersion, variations: successfulVariations };
+            // Return the new version and successfully processed variations
+            return { version: newVersion, variations: successfulVariations }; 
         },
         onSuccess: (data) => {
-            // Handle success (update UI state, invalidate queries)
-            // Only remove successful uploads from queue?
-            setUploadQueue(prev => prev.filter(item => 
-                !data.variations.some(v => item.id.startsWith(`${data.version.id}-${v.variation_letter}-`))
-            ));
-            toast.success(`Version ${data.version.version_number} created with ${data.variations.length} variation(s)!`);
+            // Only remove successfully processed items from queue (error items stay)
+            // Success is now handled inside processFileUploadAndUpdate
+            
+            toast.success(`Version ${data.version.version_number} created. ${data.variations.length} variation(s) processed successfully.`);
             setCurrentVersionId(data.version.id);
             if (data.variations.length > 0) {
-                setCurrentVariationId(data.variations[0].id);
+                 // Sort variations by letter before picking the first one?
+                 const sortedVariations = [...data.variations].sort((a, b) => a.variation_letter.localeCompare(b.variation_letter));
+                 setCurrentVariationId(sortedVariations[0].id);
             }
             queryClient.invalidateQueries({ queryKey: ['designDetails', designId] });
             queryClient.invalidateQueries({ queryKey: ['designs', projectId] });
         },
         onError: (error: Error) => {
-            // Error handled within loop for individual files, this catches version creation errors etc.
+            // Catches errors from initial version creation or sequential variation creation
             toast.error(`Failed to add version: ${error.message}`);
-            // Ensure queue items related to this attempt (if any started) are marked as error
-            // This might be complex if version creation failed before loop started.
-            // Simple approach: mark all 'pending'/'uploading' related to this *potential* version as error?
-            // Need a way to link queue items to the attempt if version ID isn't known yet.
-            // For now, rely on the catch block inside the loop to mark individual file errors.
+             // Cleanup logic for queue items might be needed if error occurred before loop start
+             // For now, rely on individual errors set in processFileUploadAndUpdate
         },
     });
 };
 
-export const useAddVariationsToVersion = (versionId: string, designId: string, projectId: string) => {
+// Refactored hook for adding variations with queue integration
+export const useAddVariationsToVersion = (
+    versionId: string, 
+    designId: string, 
+    projectId: string,
+    setUploadQueue: React.Dispatch<React.SetStateAction<UploadingFileInfo[]>> // Add setUploadQueue
+) => {
     const { supabase } = useAuth();
     const queryClient = useQueryClient();
+    const BUCKET_NAME = 'design-variations';
+    const CONCURRENCY_LIMIT = 3; // Restore concurrency limit
 
     return useMutation({
         mutationFn: async ({ files }: { files: File[] }) => {
             if (!supabase) throw new Error("Supabase client not available");
             if (!versionId) throw new Error("Version ID is required");
+            if (!files || files.length === 0) return { addedVariations: [] }; // Return early if no files
 
-            // Get existing variations to determine next letters
-            const { data: existingVariations, error: existingError } = await supabase
+            // --- 1. Get the current highest variation letter ---
+            const { data: existingVariations, error: fetchError } = await supabase
                 .from('variations')
                 .select('variation_letter')
                 .eq('version_id', versionId)
                 .order('variation_letter', { ascending: false });
 
-            if (existingError) throw new Error(`Failed to get existing variations: ${existingError.message}`);
-
-            let nextLetterCode = existingVariations && existingVariations.length > 0
-                ? existingVariations[0].variation_letter.charCodeAt(0) + 1
-                : 65; // ASCII for 'A'
-
-            const newVariations: Variation[] = [];
-            for (const file of files) {
-                const variationLetter = String.fromCharCode(nextLetterCode++);
-
-                // Create variation
-                const { data: newVariation, error: variationError } = await supabase
-                    .from('variations')
-                    .insert({
-                        version_id: versionId,
-                        variation_letter: variationLetter,
-                        status: VariationFeedbackStatus.PendingFeedback
-                    })
-                    .select()
-                    .single();
-
-                if (variationError || !newVariation) {
-                    throw new Error(`Failed to create variation ${variationLetter}: ${variationError?.message}`);
-                }
-
-                // Upload file
-                const filePath = `projects/${projectId}/designs/${designId}/versions/${versionId}/variations/${newVariation.id}/${file.name}`;
-                const { error: uploadError } = await supabase.storage
-                    .from('design-variations')
-                    .upload(filePath, file);
-
-                if (uploadError) {
-                    throw new Error(`Failed to upload file for variation ${variationLetter}: ${uploadError.message}`);
-                }
-
-                // Update variation with file path
-                const { data: updatedVariation, error: updateError } = await supabase
-                    .from('variations')
-                    .update({ file_path: filePath })
-                    .eq('id', newVariation.id)
-                    .select()
-                    .single();
-
-                if (updateError) {
-                    throw new Error(`Failed to update variation ${variationLetter} with file path: ${updateError.message}`);
-                }
-
-                newVariations.push(updatedVariation);
+            if (fetchError) {
+                throw new Error(`Failed to fetch existing variations: ${fetchError.message}`);
             }
 
-            return newVariations;
+            let nextLetterCode = 65; // Start at 'A'
+            if (existingVariations && existingVariations.length > 0) {
+                const highestLetter = existingVariations[0].variation_letter;
+                nextLetterCode = highestLetter.charCodeAt(0) + 1;
+            }
+
+            // --- 2. Sequentially create all new variation DB records ---
+            const createdVariations: Variation[] = [];
+            try {
+                for (let i = 0; i < files.length; i++) {
+                    const variationLetter = String.fromCharCode(nextLetterCode + i);
+                    const { data: createdVar, error: variationCreateError } = await supabase
+                        .from('variations')
+                        .insert({ version_id: versionId, variation_letter: variationLetter, status: VariationFeedbackStatus.PendingFeedback })
+                        .select()
+                        .single();
+
+                    if (variationCreateError || !createdVar) {
+                        throw new Error(`Failed to create DB record for variation ${variationLetter}: ${variationCreateError?.message}`);
+                    }
+                    createdVariations.push(createdVar);
+                }
+            } catch (error: any) {
+                 console.error("[AddVarUpload] Error during sequential variation record creation:", error);
+                 // Unlike creating a new version, we don't necessarily need to clean up here,
+                 // as the version already exists. Just re-throw.
+                 throw error; 
+            }
+
+            // --- 3. Define the upload and update function ---
+            const processFileUploadAndUpdate = async (file: File, variationRecord: Variation): Promise<Variation> => {
+                const fileId = `${variationRecord.version_id}-${variationRecord.variation_letter}-${Date.now()}`;
+                let finalFilePath = '';
+                const previewUrl = URL.createObjectURL(file);
+
+                setUploadQueue(prev => [
+                    ...prev, 
+                    { id: fileId, file, previewUrl, status: 'pending', progress: 0, uploadStarted: false, xhr: undefined }
+                ]);
+
+                try {
+                    // a. Prepare Upload Path & URL
+                    finalFilePath = `projects/${projectId}/designs/${designId}/versions/${versionId}/variations/${variationRecord.id}/${file.name}`;
+                    const { data: signedUrlData, error: signedUrlError } = await supabase.storage
+                        .from(BUCKET_NAME)
+                        .createSignedUploadUrl(finalFilePath);
+                    if (signedUrlError || !signedUrlData?.signedUrl) {
+                        throw new Error(`Failed to get signed URL for ${variationRecord.variation_letter}: ${signedUrlError?.message || 'No URL'}`);
+                    }
+                    const signedUrl = signedUrlData.signedUrl;
+
+                    // b. XHR Upload
+                    await new Promise<void>((resolve, reject) => {
+                        const xhr = new XMLHttpRequest();
+                        setUploadQueue(prev => prev.map(f => f.id === fileId ? { ...f, xhr: xhr, status: 'uploading', uploadStarted: true, progress: 0 } : f));
+                        xhr.open('PUT', signedUrl, true);
+                        xhr.setRequestHeader('Content-Type', file.type);
+                        xhr.upload.onprogress = (event) => {
+                            if (event.lengthComputable) {
+                                const progress = Math.round((event.loaded / event.total) * 100);
+                                setUploadQueue(prev => prev.map(f => f.id === fileId ? { ...f, progress: progress } : f));
+                            }
+                        };
+                        xhr.onload = () => (xhr.status >= 200 && xhr.status < 300) ? resolve() : reject(new Error(`Storage upload failed: Status ${xhr.status}`));
+                        xhr.onerror = () => reject(new Error('Storage upload failed: Network error'));
+                        xhr.onabort = () => reject(new Error('Upload cancelled'));
+                        xhr.send(file);
+                    });
+
+                    // c. Update Variation Record
+                    const { data: updatedVariation, error: updateError } = await supabase
+                        .from('variations')
+                        .update({ file_path: finalFilePath })
+                        .eq('id', variationRecord.id)
+                    .select()
+                    .single();
+                    if (updateError || !updatedVariation) {
+                        throw new Error(`Failed to link file path for ${variationRecord.variation_letter}: ${updateError?.message}`);
+                    }
+
+                    // d. Success
+                    setUploadQueue(prev => prev.filter(f => f.id !== fileId)); 
+                    URL.revokeObjectURL(previewUrl);
+                    return updatedVariation;
+
+                } catch (error: any) {
+                    console.error(`[AddVarUpload] Failed processing ${variationRecord.variation_letter}:`, error);
+                    setUploadQueue(prev => prev.map(f => 
+                        f.id === fileId ? { ...f, status: 'error', error: error.message || 'Failed', progress: 0 } : f
+                    ));
+                    URL.revokeObjectURL(previewUrl);
+                    throw error;
+                }
+            };
+
+            // --- 4. Concurrency Management Loop ---
+            const allUploadPromises: Promise<Variation>[] = [];
+            let activePromises: Promise<any>[] = [];
+            const fileIterator = files.entries();
+            let currentFileJobIndex = 0;
+            let nextFileJob = fileIterator.next();
+
+            while (currentFileJobIndex < files.length || activePromises.length > 0) {
+                while (activePromises.length < CONCURRENCY_LIMIT && !nextFileJob.done) {
+                    const [originalIndex, fileToProcess] = nextFileJob.value;
+                    // Use the index relative to the *newly created* variations array
+                    const correspondingVariation = createdVariations[originalIndex]; 
+
+                    if (!correspondingVariation) {
+                        console.error(`Consistency error: No pre-created variation found for file index ${originalIndex}`);
+                        currentFileJobIndex++;
+                        nextFileJob = fileIterator.next();
+                        continue; 
+                    }
+
+                    const uploadPromise = processFileUploadAndUpdate(fileToProcess, correspondingVariation);
+                    allUploadPromises.push(uploadPromise);
+
+                    const wrappedPromise = uploadPromise
+                        .catch(() => {}) 
+                        .finally(() => {
+                            activePromises = activePromises.filter(p => p !== wrappedPromise);
+                        });
+                    activePromises.push(wrappedPromise);
+
+                    currentFileJobIndex++;
+                    nextFileJob = fileIterator.next();
+                }
+
+                if (activePromises.length > 0) {
+                    await Promise.race(activePromises);
+                } else {
+                    break;
+                }
+            }
+
+            // --- 5. Wait for all uploads and process results ---
+            const finalResults = await Promise.allSettled(allUploadPromises);
+
+            const successfulVariations = finalResults
+                .filter((result): result is PromiseFulfilledResult<Variation> => result.status === 'fulfilled')
+                .map(result => result.value);
+            
+            const failedCount = files.length - successfulVariations.length;
+            console.log(`[AddVarUpload] Finished. Success: ${successfulVariations.length}, Failed: ${failedCount}`);
+
+            return { addedVariations: successfulVariations };
         },
-        onSuccess: (variations) => {
-            toast.success(`Added ${variations.length} new variation(s)!`);
-            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] });
+        onSuccess: (data, variables) => {
+            const successCount = data.addedVariations.length;
+            const totalAttempted = variables.files.length;
+            if (successCount > 0) {
+                 toast.success(`Successfully added ${successCount} of ${totalAttempted} variation(s).`);
+                 queryClient.invalidateQueries({ queryKey: ['designDetails', designId] });
+                 if (projectId) {
+                     queryClient.invalidateQueries({ queryKey: ['designs', projectId] });
+                 }
+            } else if (totalAttempted > 0) { // Only show error if files were attempted
+                 toast.error(`Failed to add ${totalAttempted} variation(s). Check queue for errors.`);
+            } // If totalAttempted is 0, do nothing.
+            // Successful uploads are removed from queue inside processFileUploadAndUpdate
         },
-        onError: (error) => {
-            toast.error(error.message);
+        onError: (error: Error, variables) => {
+            // Catches errors from initial fetch or sequential creation phase
+            toast.error(`Failed to add variations: ${error.message}`);
+            console.error("[AddVarUpload] Global mutation error:", error);
+            // Potentially mark related queue items as error? Difficult without IDs yet.
         },
     });
 };
 
-// --- Variation Mutations ---
 export const useReplaceVariationFile = (variationId: string, designId: string, projectId: string) => {
     const { supabase } = useAuth();
     const queryClient = useQueryClient();
