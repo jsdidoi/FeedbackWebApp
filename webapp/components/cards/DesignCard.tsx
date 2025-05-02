@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ImageIcon, Loader2, Pencil, Trash2 } from 'lucide-react';
+import { ImageIcon, Loader2, Pencil, Trash2, ImageOff } from 'lucide-react';
 import { DesignGridItem, DesignStage, VariationFeedbackStatus } from '@/types/models';
 import { useAuth } from '@/providers/AuthProvider';
 import Image from 'next/image';
@@ -32,6 +32,8 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
+import { getProcessedImagePath, getPublicImageUrl } from '@/lib/imageUtils';
+import { THUMBNAIL_WIDTH } from '@/lib/constants/imageConstants';
 
 interface DesignCardProps {
   design: DesignGridItem;
@@ -40,42 +42,48 @@ interface DesignCardProps {
   onDelete: (designId: string) => void;
 }
 
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const processedBucketName = process.env.NEXT_PUBLIC_SUPABASE_PROCESSED_BUCKET;
+
 export const DesignCard = ({ design, onClick, onSaveName, onDelete }: DesignCardProps) => {
-  const { supabase } = useAuth();
   const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [isLoadingUrl, setIsLoadingUrl] = useState(false);
+  const [isLoadingUrl, setIsLoadingUrl] = useState(true);
+  const [urlError, setUrlError] = useState<string | null>(null);
   const [editedName, setEditedName] = useState(design.name);
   const [isEditNameDialogOpen, setIsEditNameDialogOpen] = useState(false);
 
   useEffect(() => {
-    if (supabase && design.latest_thumbnail_path) {
-      setIsLoadingUrl(true);
-      const path = design.latest_thumbnail_path;
-      const getSignedUrl = async () => {
-        try {
-          if (!path) throw new Error("Thumbnail path is unexpectedly null or undefined."); 
-          
-          const { data, error } = await supabase.storage
-            .from('design-variations')
-            .createSignedUrl(path, 300);
-          
-          if (error) {
-            throw error;
-          }
+    setImageUrl(null);
+    setUrlError(null);
+    setIsLoadingUrl(true);
 
-          console.log(`[DesignCard] Path: ${path}, Signed URL: ${data?.signedUrl}`);
-          setImageUrl(data?.signedUrl || null);
+    if (!supabaseUrl || !processedBucketName) {
+        setUrlError("Image configuration error.");
+        console.error("[DesignCard] Error: NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_PROCESSED_BUCKET is not set.");
+        setIsLoadingUrl(false);
+        return;
+    }
+
+    const originalFilePath = design.latest_thumbnail_path;
+
+    if (originalFilePath) {
+        try {
+            const processedPath = getProcessedImagePath(originalFilePath, THUMBNAIL_WIDTH);
+            const publicUrl = getPublicImageUrl(supabaseUrl, processedBucketName, processedPath);
+            setImageUrl(publicUrl);
+            setUrlError(null);
         } catch (error: any) {
-          console.error("Error getting signed URL:", error.message || error);
-          setImageUrl(null);
+            console.error(`[DesignCard] Error generating processed URL for ${originalFilePath}:`, error);
+            setUrlError("Failed to generate image URL.");
+            setImageUrl(null);
         }
         setIsLoadingUrl(false);
-      };
-      getSignedUrl();
     } else {
-      setImageUrl(null);
+        setUrlError(null);
+        setImageUrl(null);
+        setIsLoadingUrl(false);
     }
-  }, [supabase, design.latest_thumbnail_path]);
+  }, [design.latest_thumbnail_path, supabaseUrl, processedBucketName]);
 
   useEffect(() => {
     setEditedName(design.name);
@@ -143,9 +151,14 @@ export const DesignCard = ({ design, onClick, onSaveName, onDelete }: DesignCard
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <CardContent className="p-0 aspect-square bg-muted relative overflow-hidden mb-0">
+      <CardContent className="p-0 aspect-square bg-muted relative flex items-center justify-center overflow-hidden mb-0">
         {isLoadingUrl ? (
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        ) : urlError ? (
+          <div className="flex flex-col items-center justify-center text-destructive p-2">
+            <ImageOff className="h-12 w-12 mb-1" />
+            <span className="text-xs text-center">{urlError}</span>
+          </div>
         ) : imageUrl ? (
           <Image
             src={imageUrl}
@@ -156,6 +169,7 @@ export const DesignCard = ({ design, onClick, onSaveName, onDelete }: DesignCard
             className="absolute w-full h-full transition-transform duration-300 group-hover:scale-105"
             onError={(e) => {
               console.error(`[DesignCard] Failed to load image: ${imageUrl}`, e);
+              setUrlError("Failed to load image.");
               setImageUrl(null);
             }}
           />

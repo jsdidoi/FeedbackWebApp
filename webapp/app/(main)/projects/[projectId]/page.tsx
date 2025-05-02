@@ -99,6 +99,7 @@ import {
     useUpdateComment,
     useDeleteComment
 } from '@/hooks/mutations'; // Reverted: Assuming this path is correct despite linter
+import { Controller } from "react-hook-form"; // Import Controller
 
 // For Upload Queue
 interface UploadingFileInfo {
@@ -534,14 +535,21 @@ const useCreateDesignFromUpload = (
             }
         },
         onSuccess: (data, variables) => {
-            // variables = { file: File, fileId: string }
-            // data = { ...newDesign, filePath: string, originalFileId: string }
-            toast.success(`Design "${data.name}" created and file "${variables.file.name}" uploaded successfully!`);
-            queryClient.invalidateQueries({ queryKey: ['designs', projectId] }); 
-            // Remove successfully uploaded file from queue using the originalFileId from data
+            toast.success(`Design "${data.name}" created and file "${variables.file.name}" uploaded successfully! Processing may take a moment.`); // Adjusted toast
+            
+            // Remove successfully uploaded file from queue immediately
             setUploadQueue(prevQueue => 
                 prevQueue.filter(f => f.id !== data.originalFileId)
             );
+
+            // --- REMOVE TEMPORARY DELAY ---
+            // console.log(`[Upload Success] Waiting 5 seconds before refetching designs for project ${projectId}...`);
+            // setTimeout(() => {
+            //     console.log(`[Upload Success] Refetching designs for project ${projectId} now.`);
+            queryClient.invalidateQueries({ queryKey: ['designs', projectId] }); 
+            queryClient.refetchQueries({ queryKey: ['designs', projectId] });
+            // }, 5000); 
+            // --- END REMOVE DELAY ---
         },
         onError: (error: Error, variables) => {
              // variables = { file: File, fileId: string }
@@ -792,6 +800,31 @@ function renderWithMentions(text: string) {
   );
 }
 
+// Type for Client data
+type ClientListItem = {
+    id: string;
+    name: string | null; // Allow null name from DB
+};
+
+// --- NEW: Fetch function for clients ---
+const fetchClients = async (supabase: any): Promise<ClientListItem[]> => {
+    if (!supabase) return [];
+    const { data, error } = await supabase
+        .from('clients')
+        .select('id, name')
+        .order('name', { ascending: true });
+
+    if (error) {
+        console.error('Error fetching clients:', error);
+        throw new Error(`Failed to fetch clients: ${error.message}`);
+    }
+    // Explicitly type the parameter here
+    return (data || []).map((client: { id: string; name: string | null }) => ({ 
+        ...client, 
+        name: client.name || 'Unnamed Client' 
+    })); 
+};
+
 export default function ProjectsOverviewPage() {
     const { supabase, user } = useAuth(); // Add user here
     const params = useParams();
@@ -854,21 +887,23 @@ export default function ProjectsOverviewPage() {
         defaultValues: { name: '' },
     });
 
-    // --- NEW: Zod Schema for Add Project Form ---
+    // --- NEW: Zod Schema for Add Project Form (including client_id) ---
     const addProjectSchema = z.object({
-        name: z.string().min(1, 'Project name is required'),
-        description: z.string().optional().nullable(), // Optional description
+      name: z.string().min(1, 'Project name is required'),
+      description: z.string().optional().nullable(),
+      client_id: z.string().min(1, 'Client selection is required'), // Make client ID required
     });
 
-    // --- NEW: Form Hook for Add Project Dialog ---
+    // --- NEW: Form Hook for Add Project Dialog (Updated defaults) ---
     const {
         register: registerAddProject,
         handleSubmit: handleSubmitAddProject,
         reset: resetAddProjectForm,
+        control: controlAddProject, // Need control for Controller
         formState: { errors: addProjectFormErrors },
     } = useForm<z.infer<typeof addProjectSchema>>({
         resolver: zodResolver(addProjectSchema),
-        defaultValues: { name: '', description: '' },
+        defaultValues: { name: '', description: '', client_id: '' }, // Add client_id default
     });
 
     // --- Queries ---
@@ -883,7 +918,12 @@ export default function ProjectsOverviewPage() {
     const activeProjects = allProjectsData?.filter(p => !p.is_archived) || [];
     const archivedProjects = allProjectsData?.filter(p => p.is_archived) || [];
 
-    const { data: selectedProjectDetails, isLoading: isLoadingSelectedProject } = useQuery<Project | null>({
+    const { 
+        data: selectedProjectDetails, 
+        isLoading: isLoadingSelectedProject,
+        isError: isErrorSelectedProject, // Get error status
+        error: errorSelectedProject // Get error object
+    } = useQuery<Project | null>({
         queryKey: ['project', selectedProjectId],
         queryFn: () => fetchProject(supabase, selectedProjectId!),
         enabled: !!supabase && !!selectedProjectId, 
@@ -921,15 +961,40 @@ export default function ProjectsOverviewPage() {
         refetchOnWindowFocus: true, // Refetch comments if window is refocused
     });
 
+    // --- NEW: Query for Clients ---
+    const { data: clientsData, isLoading: isLoadingClients, error: errorClients } = useQuery<ClientListItem[]>({ 
+        queryKey: ['clients', 'list'], 
+        queryFn: () => fetchClients(supabase), 
+        enabled: !!supabase, // Only run if supabase client is ready
+    });
+
     // Effect to handle initial project selection based on URL or first project
     useEffect(() => {
-        if (!selectedProjectId && !isLoadingAllProjects && allProjectsData && allProjectsData.length > 0) {
-            // If no project selected (and not loading projects) and projects exist,
-            // select the one from URL if valid, otherwise select the first project in the list.
-            const projectFromUrl = allProjectsData.find(p => p.id === initialProjectId);
-            setSelectedProjectId(projectFromUrl ? projectFromUrl.id : allProjectsData[0].id);
+        // REMOVED: Detailed logging
+        // console.log('[EffectSelect Check]', { ... });
+        
+        const firstActiveProject = activeProjects?.[0]; // Get first active project
+
+        if (!selectedProjectId && !isLoadingAllProjects && firstActiveProject) {
+            // Condition 1: No project selected, list loaded, active projects exist
+            // console.log('[EffectSelect Check] Entering Condition 1');
+            const projectFromUrl = allProjectsData?.find(p => p.id === initialProjectId);
+            const targetId = (projectFromUrl && !projectFromUrl.is_archived) ? projectFromUrl.id : firstActiveProject.id;
+            // console.log(`[EffectSelect Check] Condition 1: Setting project ID to: ${targetId}`);
+            setSelectedProjectId(targetId);
+        } else if (selectedProjectId && isErrorSelectedProject && !isLoadingAllProjects && firstActiveProject) {
+            // Condition 2: Project selected, but fetch failed, list loaded, active projects exist
+            // console.log('[EffectSelect Check] Entering Condition 2');
+            const isNotFoundError = errorSelectedProject?.message?.includes('PGRST116');
+            // console.log('[EffectSelect Check] Condition 2: isNotFoundError = ', isNotFoundError);
+            if (isNotFoundError) {
+                // console.log(`[EffectSelect Check] Condition 2: About to set project ID to first active: ${firstActiveProject.id}`);
+                setSelectedProjectId(firstActiveProject.id);
+                // console.log(`[EffectSelect Check] Condition 2: Replacing router path to: /projects/${firstActiveProject.id}`);
+                router.replace(`/projects/${firstActiveProject.id}`, { scroll: false });
+            }
         }
-    }, [selectedProjectId, isLoadingAllProjects, allProjectsData, initialProjectId]);
+    }, [selectedProjectId, initialProjectId, isLoadingAllProjects, allProjectsData, activeProjects, isErrorSelectedProject, errorSelectedProject, router]); 
 
     // Effect to set initial/default version/variation when modal data loads
     useEffect(() => {
@@ -998,7 +1063,8 @@ export default function ProjectsOverviewPage() {
     const addVariationsToVersionMutation = useAddVariationsToVersion(
         currentVersionId || '',
         selectedDesignIdForModal || '',
-        selectedProjectId || ''
+        selectedProjectId || '',
+        setUploadQueue // Pass the setter function
     );
     // NEW: Instantiate replace variation file hook
     const replaceVariationFileMutation = useReplaceVariationFile(
@@ -1543,29 +1609,22 @@ export default function ProjectsOverviewPage() {
 
     // --- NEW: Handler for Add Project form submission ---
     const handleAddNewProjectSubmit = (values: z.infer<typeof addProjectSchema>) => {
-        // Get client_id from the currently selected project's details
-        const currentClientId = selectedProjectDetails?.client_id;
+        // REMOVED: Logic trying to get client_id from selectedProjectDetails
+        // const currentClientId = selectedProjectDetails?.client_id;
+        // if (!currentClientId) { ... }
 
-        if (!currentClientId) {
-            toast.error("Cannot add project: Client context is missing. Please ensure a project is selected.");
-            return;
-        }
-
-        // Combine form values with the determined client_id
+        // client_id now comes directly from the form `values`
         const projectData = {
-            ...values,
-            client_id: currentClientId,
+            name: values.name,
+            description: values.description,
+            client_id: values.client_id, // Use client_id from form
         };
 
         addProjectMutation.mutate(projectData, {
             onSuccess: (newProject) => {
                 resetAddProjectForm(); // Reset form
                 setIsAddProjectDialogOpen(false); // Close dialog
-                // Optionally, navigate to the new project
-                // router.push(`/projects/${newProject.id}`); 
-                // setSelectedProjectId(newProject.id); // Select it in the sidebar
             }
-            // onError handled by hook
         });
     };
 
@@ -1717,22 +1776,54 @@ export default function ProjectsOverviewPage() {
                                 <DialogTitle>Add New Project</DialogTitle>
                                 <DialogDescription>Enter details for the new project.</DialogDescription>
                             </DialogHeader>
-                            <form onSubmit={handleSubmitAddProject(handleAddNewProjectSubmit)} className="space-y-4">
+                            <form onSubmit={handleSubmitAddProject(handleAddNewProjectSubmit)} className="space-y-4 pt-4">
+                                {/* --- ADDED: Client Selector --- */}
                                 <div className="space-y-1">
-                                    <Label htmlFor="projectName">Project Name</Label>
+                                    <Label htmlFor="clientSelect">Client *</Label>
+                                    <Controller
+                                        name="client_id"
+                                        control={controlAddProject}
+                                        render={({ field }) => (
+                                            <Select 
+                                                onValueChange={field.onChange} 
+                                                value={field.value}
+                                                disabled={isLoadingClients} // Disable while loading clients
+                                            >
+                                                <SelectTrigger id="clientSelect">
+                                                    <SelectValue placeholder={isLoadingClients ? "Loading clients..." : "Select a client..."} />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {!isLoadingClients && clientsData?.map((client) => (
+                                                        <SelectItem key={client.id} value={client.id}>
+                                                            {client.name}
+                                                        </SelectItem>
+                                                    ))}
+                                                    {!isLoadingClients && (!clientsData || clientsData.length === 0) && (
+                                                        <div className="px-2 py-1.5 text-sm text-muted-foreground italic">No clients found.</div>
+                                                    )}
+                                                </SelectContent>
+                                            </Select>
+                                        )}
+                                    />
+                                    {errorClients && <p className="text-xs text-red-600">Error loading clients: {errorClients.message}</p>}
+                                    {addProjectFormErrors.client_id && <p className="text-xs text-red-600">{addProjectFormErrors.client_id.message}</p>}
+                                </div>
+                                {/* --- End Client Selector --- */}
+
+                                <div className="space-y-1">
+                                    <Label htmlFor="projectName">Project Name *</Label>
                                     <Input id="projectName" {...registerAddProject("name")} />
                                     {addProjectFormErrors.name && <p className="text-xs text-red-600">{addProjectFormErrors.name.message}</p>}
                                 </div>
                                 <div className="space-y-1">
                                     <Label htmlFor="projectDescription">Description (Optional)</Label>
                                     <Textarea id="projectDescription" {...registerAddProject("description")} rows={3}/>
-                                    {/* No error display needed for optional field */} 
                                 </div>
                                 <DialogFooter>
                                     <DialogClose asChild>
                                         <Button type="button" variant="outline" onClick={() => resetAddProjectForm()}>Cancel</Button>
                                     </DialogClose>
-                                    <Button type="submit" disabled={addProjectMutation.isPending}>
+                                    <Button type="submit" disabled={addProjectMutation.isPending || isLoadingClients}>
                                         {addProjectMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null} Create Project
                                     </Button>
                                 </DialogFooter>
@@ -2222,27 +2313,25 @@ export default function ProjectsOverviewPage() {
                                 <div className="grid grid-rows-[auto_1fr] overflow-hidden">
                                     {/* Version/Variation Navigation */} 
                                     {/* Reduced padding to px-2 pt-1 pb-2 */}
+                                                                        {/* Version/Variation Navigation */}
+                                    {/* Reduced padding to px-2 pt-1 pb-2 */}
                                     <nav className="px-2 pt-1 pb-2 border-b overflow-y-auto max-h-[35vh]">
-                                        {/* --- Version Section --- */} 
-                                        {/* Removed pb-2 for consistency */}
-                                        <div className="mb-2 border-b"> 
-                                            <div className="flex justify-between items-center mb-1"> 
+                                        {/* --- Version Section --- */}
+                                        <div className="mb-2 border-b pb-2"> {/* Added pb-2 back here */}
+                                            <div className="flex justify-between items-center mb-1">
                                                 <h4 className="text-sm font-medium">Version</h4>
-                                                {/* Removed the container div and the Select */} 
                                             </div>
-                                            <div className="flex flex-wrap items-center gap-2 mt-2"> {/* Added items-center */} 
+                                            <div className="flex flex-wrap items-center gap-2 mt-2">
                                                 {designDetailsData?.versions.map((version) => {
-                                                    const stage = version.stage; // Use temp var if needed for linter
+                                                    const stage = version.stage;
                                                     return (
                                                         <Button
                                                             key={version.id}
                                                             variant={currentVersionId === version.id ? 'default' : 'outline'}
-                                                            // size="sm" // Removed size
                                                             onClick={() => handleVersionChange(version.id)}
-                                                            // Added explicit sizing, kept existing classes
                                                             className={cn(
-                                                                "h-auto py-1 px-2 text-xs min-w-[4rem] relative pr-5 group", 
-                                                                currentVersionId !== version.id && "border" // Ensure outline gets border
+                                                                "h-auto py-1 px-2 text-xs min-w-[4rem] relative pr-5 group",
+                                                                currentVersionId !== version.id && "border"
                                                             )}
                                                         >
                                                             V{version.version_number}
@@ -2264,33 +2353,29 @@ export default function ProjectsOverviewPage() {
                                                         </Button>
                                                     );
                                                 })}
-                                                {/* Add Version Button */}
                                                 <Button
                                                     variant="outline"
-                                                    // Removed size="sm"
-                                                    // Removed p-2, added explicit sizing + ml-2
                                                     className="h-auto py-1 px-2 ml-2"
                                                     onClick={handleAddNewVersionClick}
                                                     title="Add New Version"
                                                 >
                                                     <PlusCircle className="h-4 w-4" />
                                                 </Button>
-                                                {/* --- MOVED Stage Select Here --- */}
                                                 {currentVersion && (
-                                                    <div className="flex items-center gap-1 ml-auto"> {/* Use ml-auto to push right */} 
-                                                        <Select 
-                                                            value={currentVersion.stage || ''} 
-                                                            onValueChange={(newStage) => { 
-                                                                if (currentVersion.status) { 
+                                                    <div className="flex items-center gap-1 ml-auto">
+                                                        <Select
+                                                            value={currentVersion.stage || ''}
+                                                            onValueChange={(newStage) => {
+                                                                if (currentVersion.status) {
                                                                     updateVersionDetailsMutation.mutate({
                                                                         stage: newStage as DesignStage,
-                                                                        status: currentVersion.status 
+                                                                        status: currentVersion.status
                                                                     });
                                                                 } else {
                                                                     toast.error("Cannot update stage: Current status is missing.")
                                                                 }
                                                             }}
-                                                            disabled={!currentVersion || updateVersionDetailsMutation.isPending} 
+                                                            disabled={!currentVersion || updateVersionDetailsMutation.isPending}
                                                         >
                                                             <SelectTrigger className="w-[100px] h-7 text-xs">
                                                                 <SelectValue placeholder="Stage..." />
@@ -2303,48 +2388,38 @@ export default function ProjectsOverviewPage() {
                                                                 ))}
                                                             </SelectContent>
                                                         </Select>
-                                                        {/* Loader during mutation */} 
-                                                        {updateVersionDetailsMutation.isPending && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />} 
+                                                        {updateVersionDetailsMutation.isPending && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
                                                     </div>
                                                 )}
-                                                {/* --- End Moved Stage Select --- */}
                                                 {(!designDetailsData?.versions || designDetailsData.versions.length === 0) && (
                                                     <p className="text-xs text-muted-foreground italic">No versions found.</p>
                                                 )}
                                             </div>
                                         </div>
 
-                                        {/* --- Variation Section --- */} 
-                                        {/* Reduced margin to mt-2 */}
-                                        <div className="mt-2"> 
-                                            {/* Reduced margin to mb-1 */} 
-                                            <h4 className="text-sm font-medium mb-1">Variations for V{currentVersion?.version_number}</h4> 
-                                            {/* Reduced margin to mt-2 */}
-                                            <div className="flex flex-wrap items-center gap-2 mt-2"> 
+                                        {/* --- Variation Section --- */}
+                                        <div className="mt-2">
+                                            <h4 className="text-sm font-medium mb-1">Variations for V{currentVersion?.version_number}</h4>
+                                            <div className="flex flex-wrap items-center gap-2 mt-2">
                                                 {currentVersion?.variations.map((variation, index) => {
-                                                    const displayLetter = String.fromCharCode(65 + index); // Calculate A, B, C...
+                                                    const displayLetter = String.fromCharCode(65 + index);
                                                     return (
-                                                        <Button 
-                                                            key={variation.id} 
+                                                        <Button
+                                                            key={variation.id}
                                                             variant={currentVariationId === variation.id ? 'default' : 'outline'}
-                                                            // size="sm" // Removed size
                                                             onClick={() => handleVariationChange(variation.id)}
-                                                            // Added explicit sizing, kept existing classes
                                                             className={cn(
                                                                 "h-auto py-1 px-2 text-xs min-w-[3rem]",
-                                                                currentVariationId !== variation.id && "border" // Ensure outline gets border
+                                                                currentVariationId !== variation.id && "border"
                                                             )}
                                                         >
                                                             {displayLetter}
                                                         </Button>
                                                     );
                                                 })}
-                                                {/* Add Variation Button */} 
-                                                <Button 
-                                                    variant="outline" 
-                                                    // Removed size="sm"
-                                                    // Removed p-2, added explicit sizing + ml-2
-                                                    className="h-auto py-1 px-2 ml-2" 
+                                                <Button
+                                                    variant="outline"
+                                                    className="h-auto py-1 px-2 ml-2"
                                                     onClick={handleAddNewVariationClick}
                                                     title="Add New Variation"
                                                 >
@@ -2355,17 +2430,15 @@ export default function ProjectsOverviewPage() {
                                                 )}
                                             </div>
                                         </div>
-                                        {/* --- End of Variation Section --- */} 
+                                        {/* --- End of Variation Section --- */}
 
-                                        {/* --- NEW: Upload Queue (Inside Nav for Apply Stability) --- */}
+                                        {/* --- Upload Queue --- */}
                                         {uploadQueue.length > 0 && (
                                             <div className="mt-3 pt-3 border-t space-y-2 max-h-[20vh] overflow-y-auto">
-                                                {/* Enhanced Title showing queue status */}
                                                 <h4 className="text-sm font-medium text-muted-foreground px-1">
                                                     Upload Queue ({uploadQueue.filter(f => f.status === 'success' || f.status === 'error' || f.status === 'cancelled').length}/{uploadQueue.length} processed)
                                                 </h4>
                                                 {uploadQueue.map(item => {
-                                                    // Determine more specific status text
                                                     let statusText = 'Pending...';
                                                     if (item.status === 'pending' && !item.uploadStarted) {
                                                         statusText = 'Queued...';
@@ -2376,16 +2449,14 @@ export default function ProjectsOverviewPage() {
                                                     } else if (item.status === 'cancelled') {
                                                         statusText = 'Cancelled';
                                                     } else if (item.status === 'success') {
-                                                        // Success items are removed, but handle just in case
-                                                        statusText = 'Success'; 
+                                                        statusText = 'Success';
                                                     }
-                                                    
+
                                                     return (
                                                         <div key={item.id} className="flex items-center gap-3 p-2 border rounded-md bg-background">
                                                             <img src={item.previewUrl} alt={item.file.name} className="h-8 w-8 object-cover rounded flex-shrink-0" />
                                                             <div className="flex-grow space-y-1 min-w-0">
                                                                 <p className="text-xs font-medium truncate" title={item.file.name}>{item.file.name}</p>
-                                                                {/* Display specific status text or progress bar */}
                                                                 {item.status === 'uploading' ? (
                                                                     <Progress value={item.progress} className="h-1.5" />
                                                                 ) : (
@@ -2403,12 +2474,11 @@ export default function ProjectsOverviewPage() {
                                                                 {item.status === 'uploading' && (
                                                                     <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground" onClick={() => handleCancelUpload(item.id)} title="Cancel Upload">
                                                                         <XCircle className="h-4 w-4" />
-                                             </Button>
-                                         )}
+                                                                    </Button>
+                                                                )}
                                                                 {item.status === 'error' && (
                                                                     <XCircle className="h-5 w-5 text-red-500" />
                                                                 )}
-                                                                {/* Add icon for queued? Maybe Clock? */}
                                                                 {item.status === 'pending' && !item.uploadStarted && (
                                                                     <Clock className="h-4 w-4 text-muted-foreground" />
                                                                 )}
@@ -2419,7 +2489,7 @@ export default function ProjectsOverviewPage() {
                                             </div>
                                         )}
                                         {/* --- End Upload Queue --- */}
-                                    </nav>
+                                    </nav> {/* This is the closing tag that was likely missing/misplaced */}
 
                                     {/* Image Viewer Area - Change padding from p-6 to p-8 */}
                                     <div className="p-8 flex items-start justify-center overflow-hidden h-full relative group/imageViewer">

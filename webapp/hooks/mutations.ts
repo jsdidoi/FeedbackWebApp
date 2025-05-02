@@ -10,6 +10,11 @@ import {
     Comment,
     Attachment
 } from '@/types/models';
+import { 
+    THUMBNAIL_WIDTH, 
+    MEDIUM_WIDTH, 
+    LARGE_WIDTH 
+} from '@/lib/constants/imageConstants'; // Import width constants
 
 // --- Version Mutations ---
 export const useUpdateVersionDetails = (versionId: string, designId: string, projectId: string | null) => {
@@ -339,10 +344,10 @@ export const useAddVariationsToVersion = (
                 for (let i = 0; i < files.length; i++) {
                     const variationLetter = String.fromCharCode(nextLetterCode + i);
                     const { data: createdVar, error: variationCreateError } = await supabase
-                        .from('variations')
+                    .from('variations')
                         .insert({ version_id: versionId, variation_letter: variationLetter, status: VariationFeedbackStatus.PendingFeedback })
-                        .select()
-                        .single();
+                    .select()
+                    .single();
 
                     if (variationCreateError || !createdVar) {
                         throw new Error(`Failed to create DB record for variation ${variationLetter}: ${variationCreateError?.message}`);
@@ -397,8 +402,8 @@ export const useAddVariationsToVersion = (
                     });
 
                     // c. Update Variation Record
-                    const { data: updatedVariation, error: updateError } = await supabase
-                        .from('variations')
+                const { data: updatedVariation, error: updateError } = await supabase
+                    .from('variations')
                         .update({ file_path: finalFilePath })
                         .eq('id', variationRecord.id)
                     .select()
@@ -480,7 +485,7 @@ export const useAddVariationsToVersion = (
             const totalAttempted = variables.files.length;
             if (successCount > 0) {
                  toast.success(`Successfully added ${successCount} of ${totalAttempted} variation(s).`);
-                 queryClient.invalidateQueries({ queryKey: ['designDetails', designId] });
+            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] });
                  if (projectId) {
                      queryClient.invalidateQueries({ queryKey: ['designs', projectId] });
                  }
@@ -494,6 +499,133 @@ export const useAddVariationsToVersion = (
             toast.error(`Failed to add variations: ${error.message}`);
             console.error("[AddVarUpload] Global mutation error:", error);
             // Potentially mark related queue items as error? Difficult without IDs yet.
+        },
+    });
+};
+
+// Helper function (similar to edge function, but simplified for client-side use)
+// Gets the BASE name without extension or _WIDTH suffix
+const getBaseFileName = (filePath: string | null | undefined): string => {
+    if (!filePath) return '';
+    const parts = filePath.split('/');
+    const fileNameWithAnyExt = parts.pop() || '';
+    const fileNameWithoutAnyExt = fileNameWithAnyExt.split('.').slice(0, -1).join('.');
+    return fileNameWithoutAnyExt.replace(/_\d+$/, ''); 
+};
+
+// --- Delete Variation Hook ---
+// MODIFIED: To include storage file deletion
+export const useDeleteVariation = (variationId: string, designId: string) => {
+    const { supabase } = useAuth();
+    const queryClient = useQueryClient();
+    const DESIGN_VARIATIONS_BUCKET = 'design-variations';
+    const PROCESSED_IMAGES_BUCKET = 'processed-images'; // Use correct bucket name
+
+    return useMutation({
+        mutationFn: async () => {
+            if (!supabase) throw new Error("Supabase client not available");
+            if (!variationId) throw new Error("Variation ID is required");
+
+            let originalFilePath: string | null = null;
+
+            // 1. Fetch the file_path BEFORE deleting the DB record
+            try {
+                const { data: variationData, error: fetchError } = await supabase
+                    .from('variations')
+                    .select('file_path')
+                    .eq('id', variationId)
+                    .single();
+
+                if (fetchError && fetchError.code !== 'PGRST116') { // Ignore 'not found' errors
+                    console.error(`[DeleteVar] Error fetching file_path for ${variationId}:`, fetchError);
+                    // Decide if we should proceed or throw. Let's proceed but log.
+                } else if (variationData) {
+                    originalFilePath = variationData.file_path;
+                    console.log(`[DeleteVar] Found file_path for ${variationId}: ${originalFilePath}`);
+                }
+            } catch (error) {
+                console.error(`[DeleteVar] Exception fetching file_path for ${variationId}:`, error);
+                // Decide if we should proceed or throw. Let's proceed but log.
+            }
+
+            // 2. Delete the Variation record from the database
+            const { error: deleteDbError } = await supabase
+                .from('variations')
+                .delete()
+                .eq('id', variationId);
+
+            if (deleteDbError) {
+                console.error(`[DeleteVar] Error deleting variation record ${variationId}:`, deleteDbError);
+                throw new Error(`Failed to delete variation record: ${deleteDbError.message}`);
+            }
+
+            console.log(`[DeleteVar] Successfully deleted variation record ${variationId}`);
+
+            // 3. If file_path existed, attempt to delete storage files AFTER successful DB delete
+            if (originalFilePath) {
+                try {
+                    const baseFileName = getBaseFileName(originalFilePath);
+                    const originalPathParts = originalFilePath.split('/');
+                    originalPathParts.pop(); // Remove original filename
+                    const basePath = originalPathParts.join('/');
+                    
+                    const pathsToDeleteProcessed: string[] = [
+                        `${basePath}/${baseFileName}_${THUMBNAIL_WIDTH}.webp`,
+                        `${basePath}/${baseFileName}_${MEDIUM_WIDTH}.webp`,
+                        `${basePath}/${baseFileName}_${LARGE_WIDTH}.webp`
+                    ];
+                    const pathsToDeleteOriginal: string[] = [originalFilePath];
+
+                    console.log(`[DeleteVar] Attempting to delete original file:`, pathsToDeleteOriginal);
+                    const { error: deleteOriginalError } = await supabase.storage
+                        .from(DESIGN_VARIATIONS_BUCKET)
+                        .remove(pathsToDeleteOriginal);
+
+                    if (deleteOriginalError) {
+                        // Log error but don't throw, DB delete was the primary goal
+                        console.error(`[DeleteVar] Failed to delete original file ${originalFilePath}:`, deleteOriginalError);
+                        toast.warning(`Variation record deleted, but failed to delete original storage file. Please check storage.`);
+                    } else {
+                        console.log(`[DeleteVar] Successfully deleted original file ${originalFilePath}`);
+                    }
+                    
+                    console.log(`[DeleteVar] Attempting to delete processed files:`, pathsToDeleteProcessed);
+                    const { error: deleteProcessedError } = await supabase.storage
+                        .from(PROCESSED_IMAGES_BUCKET)
+                        .remove(pathsToDeleteProcessed);
+
+                    if (deleteProcessedError) {
+                        // Log error but don't throw
+                        console.error(`[DeleteVar] Failed to delete processed files for ${originalFilePath}:`, deleteProcessedError);
+                        toast.warning(`Variation record deleted, but failed to delete processed image files. Please check storage.`);
+                    } else {
+                        console.log(`[DeleteVar] Successfully deleted processed files for ${originalFilePath}`);
+                    }
+
+                } catch (storageError) {
+                    console.error(`[DeleteVar] Exception during storage file deletion for ${originalFilePath}:`, storageError);
+                    toast.warning(`Variation record deleted, but encountered an error during storage cleanup.`);
+                }
+            } else {
+                console.log(`[DeleteVar] No file_path found for variation ${variationId}, skipping storage deletion.`);
+            }
+            
+            // Return something if needed, maybe true for success?
+            return true; 
+        },
+        onSuccess: () => {
+            toast.success("Variation deleted successfully!");
+            // Invalidate queries to refetch updated data
+            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] });
+            // Also invalidate the main designs grid query, as the thumbnail might change
+            // Find the projectId - how? We don't have it directly here. 
+            // We might need to pass projectId to the hook if we want to invalidate the grid.
+            // For now, just invalidate the details view.
+            // queryClient.invalidateQueries({ queryKey: ['designs', projectId] }); 
+            console.log("[DeleteVar] Invalidated designDetails query for:", designId);
+        },
+        onError: (error: Error) => {
+            toast.error(`Failed to delete variation: ${error.message}`);
         },
     });
 };
@@ -547,37 +679,6 @@ export const useReplaceVariationFile = (variationId: string, designId: string, p
         },
         onSuccess: () => {
             toast.success('Variation file replaced successfully!');
-            queryClient.invalidateQueries({ queryKey: ['designDetails', designId] });
-        },
-        onError: (error) => {
-            toast.error(error.message);
-        },
-    });
-};
-
-export const useDeleteVariation = (variationId: string, designId: string) => {
-    const { supabase } = useAuth();
-    const queryClient = useQueryClient();
-
-    return useMutation({
-        mutationFn: async () => {
-            if (!supabase) throw new Error("Supabase client not available");
-            if (!variationId) throw new Error("Variation ID is required");
-
-            // Delete variation record (storage cleanup handled by trigger)
-            const { error } = await supabase
-                .from('variations')
-                .delete()
-                .eq('id', variationId);
-
-            if (error) {
-                throw new Error(`Failed to delete variation: ${error.message}`);
-            }
-
-            return variationId;
-        },
-        onSuccess: () => {
-            toast.success('Variation deleted successfully!');
             queryClient.invalidateQueries({ queryKey: ['designDetails', designId] });
         },
         onError: (error) => {
