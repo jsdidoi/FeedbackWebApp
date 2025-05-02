@@ -23,6 +23,8 @@ import { toast } from 'sonner'; // For potential local errors
 import { useAuth } from '@/providers/AuthProvider'; // Import useAuth to get supabase client
 import { Dialog, DialogContent, DialogTrigger, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
+import { getProcessedImagePath, getPublicImageUrl } from '@/lib/imageUtils';
+import { THUMBNAIL_WIDTH, LARGE_WIDTH } from '@/lib/constants/imageConstants';
 
 interface CommentCardProps {
   comment: Comment;
@@ -37,6 +39,10 @@ interface CommentCardProps {
   setCollapsed?: (c: boolean) => void;
   numReplies?: number;
 }
+
+// Environment variables (needed for image URLs)
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const processedBucketName = process.env.NEXT_PUBLIC_SUPABASE_PROCESSED_BUCKET;
 
 // Utility to render mentions with highlight
 function renderWithMentions(text: string) {
@@ -111,16 +117,35 @@ export const CommentCard = ({
     setIsEditing(false);
   };
 
-  // Function to get public URL for an attachment
-  // IMPORTANT: This uses public URLs based on the current setup.
-  // Will need adjustment when bucket security is changed later.
-  const getAttachmentUrl = (filePath: string | null): string | null => {
-      if (!supabase || !filePath) return null;
-      const { data } = supabase.storage
-          .from('comment-attachments') // Use the correct bucket name
-          .getPublicUrl(filePath);
-      return data?.publicUrl || null;
+  // Function to get public URL for a processed image attachment
+  // Takes the ORIGINAL path and the desired size (thumbnail or large for modal)
+  const getProcessedAttachmentUrl = (
+      originalFilePath: string | null | undefined,
+      width: typeof THUMBNAIL_WIDTH | typeof LARGE_WIDTH
+  ): string | null => {
+      if (!supabaseUrl || !processedBucketName) {
+          console.error("Error: NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_PROCESSED_BUCKET is not set.");
+          return null;
+      }
+      if (!originalFilePath) return null;
+
+      try {
+          const processedPath = getProcessedImagePath(originalFilePath, width);
+          return getPublicImageUrl(supabaseUrl, processedBucketName, processedPath);
+      } catch (error) {
+          console.error(`Error generating processed attachment URL for ${originalFilePath}:`, error);
+          return null;
+      }
   };
+
+  // Old function - can be removed if no longer used elsewhere
+  // const getAttachmentUrl = (filePath: string | null): string | null => {
+  //     if (!supabase || !filePath) return null;
+  //     const { data } = supabase.storage
+  //         .from('comment-attachments') // Use the correct bucket name
+  //         .getPublicUrl(filePath);
+  //     return data?.publicUrl || null;
+  // };
 
   return (
     <div className="relative w-full group">
@@ -237,38 +262,50 @@ export const CommentCard = ({
                   {comment.attachments && comment.attachments.length > 0 && (
                       <div className="mt-2 space-y-1">
                           {comment.attachments.map((attachment) => {
-                              const fileUrl = getAttachmentUrl(attachment.file_path);
                               const isImage = attachment.file_type?.startsWith('image/');
+                              // Get URLs for both thumbnail and large versions
+                              const thumbnailUrl = isImage ? getProcessedAttachmentUrl(attachment.file_path, THUMBNAIL_WIDTH) : getProcessedAttachmentUrl(attachment.file_path, LARGE_WIDTH); // Fallback for non-images?
+                              const largeImageUrl = isImage ? getProcessedAttachmentUrl(attachment.file_path, LARGE_WIDTH) : null;
 
-                              // Render image thumbnail or file link based on type
-                              return isImage && fileUrl ? (
+                              return isImage && thumbnailUrl ? (
                                   <Dialog key={attachment.id}> {/* Use Dialog for lightbox effect */}
                                       <DialogTrigger asChild>
+                                          {/* Thumbnail View */}
                                           <button className="block cursor-pointer p-1 rounded-md hover:bg-muted/60 transition-colors" title={`View ${attachment.file_name}`}>
-                                              <img 
-                                                  src={fileUrl}
+                                              <img
+                                                  src={thumbnailUrl} // Use thumbnail URL here
                                                   alt={attachment.file_name || 'Comment attachment'}
-                                                  className="h-16 w-16 object-cover rounded-md border" // Thumbnail styling
+                                                  className="h-16 w-auto max-w-[100px] rounded-lg object-cover border"
+                                                  loading="lazy"
+                                                  onError={(e) => {
+                                                      // Handle thumbnail load error (e.g., show placeholder)
+                                                      console.error(`Failed to load thumbnail: ${thumbnailUrl}`);
+                                                      (e.target as HTMLImageElement).style.display = 'none'; // Hide broken image
+                                                      // Optionally show a placeholder icon here
+                                                  }}
                                               />
                                           </button>
                                       </DialogTrigger>
-                                      <DialogContent className="max-w-3xl p-2"> {/* Adjust size as needed */}
-                                          {/* Add VisuallyHidden Title for Accessibility */}
-                                          <VisuallyHidden>
-                                              <DialogTitle>{attachment.file_name || 'Attached Image'}</DialogTitle>
-                                              <DialogDescription>Full view of the attached image.</DialogDescription> 
-                                          </VisuallyHidden>
-                                          <img 
-                                              src={fileUrl} 
-                                              alt={attachment.file_name || 'Comment attachment'} 
-                                              className="max-w-full max-h-[80vh] mx-auto object-contain" // Full image styling
-                                          />
-                                      </DialogContent>
+                                      {largeImageUrl && (
+                                          <DialogContent className="max-w-4xl max-h-[80vh] p-2 sm:p-4"> {/* Adjust size as needed */}
+                                              <DialogTitle className="sr-only">{`View ${attachment.file_name}`}</DialogTitle>
+                                              <DialogDescription className="sr-only">{`Full size view of attachment ${attachment.file_name}`}</DialogDescription>
+                                              {/* Large Image View inside Modal */}
+                                              <div className="relative w-full h-[70vh]"> {/* Adjust height */}
+                                                  <img
+                                                      src={largeImageUrl} // Use large image URL here
+                                                      alt={`Full view: ${attachment.file_name}`}
+                                                      className="object-contain w-full h-full rounded-lg"
+                                                      loading="lazy"
+                                                  />
+                                              </div>
+                                          </DialogContent>
+                                      )}
                                   </Dialog>
                               ) : (
                                   <a
                                       key={attachment.id}
-                                      href={fileUrl || '#'} 
+                                      href={thumbnailUrl || '#'} 
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:underline bg-muted/50 px-2 py-1 rounded-md"

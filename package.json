@@ -34,5 +34,8 @@
     "openai": "^4.89.0",
     "ora": "^8.2.0",
     "sharp": "^0.34.1"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14"
   }
 }

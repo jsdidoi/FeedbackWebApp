@@ -19,6 +19,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from 'sonner';
 import { useUpdateVariationStatus, useReplaceVariationFile, useDeleteVariation } from '@/app/(main)/projects/[projectId]/designs/[designId]/versions/[versionId]/page'; // Updated import
 import { VariationFeedbackStatus } from '@/types/models';
+import { getProcessedImagePath, getPublicImageUrl } from '@/lib/imageUtils';
+import { LARGE_WIDTH } from '@/lib/constants/imageConstants';
 
 interface VariationDetailModalProps {
     isOpen: boolean;
@@ -32,6 +34,10 @@ interface VariationDetailModalProps {
     designId: string;
 }
 
+// Environment variables (needed for image URLs)
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const processedBucketName = process.env.NEXT_PUBLIC_SUPABASE_PROCESSED_BUCKET;
+
 export const VariationDetailModal: React.FC<VariationDetailModalProps> = ({ 
     isOpen, 
     onOpenChange, 
@@ -44,8 +50,9 @@ export const VariationDetailModal: React.FC<VariationDetailModalProps> = ({
     designId
 }) => {
     const { supabase } = useAuth();
-    const [signedImageUrl, setSignedImageUrl] = useState<string | null>(null);
+    const [imageUrl, setImageUrl] = useState<string | null>(null);
     const [isLoadingUrl, setIsLoadingUrl] = useState(false);
+    const [urlError, setUrlError] = useState<string | null>(null);
 
     // --- State for File Replacement --- Added
     const replacementFileInputRef = useRef<HTMLInputElement>(null);
@@ -54,38 +61,47 @@ export const VariationDetailModal: React.FC<VariationDetailModalProps> = ({
     // Updated state name for clarity
     const [isDeletingVariation, setIsDeletingVariation] = useState(false);
 
-    // Fetch signed URL - prioritize preview, then original
+    // Fetch processed image URL
     useEffect(() => {
-        // Determine the best path to use
-        const pathToFetch = variation?.preview_path || variation?.file_path;
+        setIsLoadingUrl(true);
+        setImageUrl(null);
+        setUrlError(null);
 
-        if (isOpen && pathToFetch && supabase) {
-            const fetchUrl = async () => {
-                setIsLoadingUrl(true);
-                setSignedImageUrl(null); 
-                try {
-                    const { data, error } = await supabase.storage
-                        .from('design-variations')
-                        // Use the determined path
-                        .createSignedUrl(pathToFetch, 3600); 
-
-                    if (error) {
-                        console.error(`Error creating signed URL for modal: ${pathToFetch}`, error);
-                        toast.error("Could not load variation image.");
-                    } else {
-                        setSignedImageUrl(data.signedUrl);
-                    }
-                } catch (err) {
-                     console.error(`Exception creating signed URL for modal: ${pathToFetch}`, err);
-                     toast.error("Could not load variation image.");
-                }
-                 setIsLoadingUrl(false);
-            };
-            fetchUrl();
-        } else if (!isOpen) {
-             setSignedImageUrl(null); 
+        if (!isOpen) {
+             setIsLoadingUrl(false);
+             return; // Don't process if modal is closed
         }
-    }, [isOpen, variation?.preview_path, variation?.file_path, supabase]); // Update dependencies
+
+        if (!supabaseUrl || !processedBucketName) {
+            setUrlError("Image configuration error.");
+            console.error("Error: NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_PROCESSED_BUCKET is not set.");
+            setIsLoadingUrl(false);
+            return;
+        }
+
+        // Use the original file_path to generate the processed URL
+        const originalFilePath = variation?.file_path;
+
+        if (originalFilePath) {
+             try {
+                const processedPath = getProcessedImagePath(originalFilePath, LARGE_WIDTH);
+                const publicUrl = getPublicImageUrl(supabaseUrl, processedBucketName, processedPath);
+                setImageUrl(publicUrl);
+                setUrlError(null);
+             } catch (err: any) {
+                 console.error(`Error generating processed URL for ${originalFilePath}:`, err);
+                 setUrlError("Could not generate image URL.");
+                 setImageUrl(null);
+                 toast.error("Could not load variation image."); // Keep user feedback
+             }
+        } else {
+            // No original file path available
+            setUrlError(null); // Not an error, just no image
+            setImageUrl(null);
+        }
+        setIsLoadingUrl(false);
+
+    }, [isOpen, variation?.file_path, supabaseUrl, processedBucketName]); // Dependencies
 
     // --- Instantiate Mutation Hooks --- 
     const updateStatusMutation = useUpdateVariationStatus(versionId, variation?.id || '');
@@ -132,7 +148,7 @@ export const VariationDetailModal: React.FC<VariationDetailModalProps> = ({
                 console.log("File replaced successfully");
                 // Force a refetch of the signed URL by temporarily clearing it
                 // The useEffect will pick up the change in variation data via query invalidation
-                setSignedImageUrl(null);
+                setImageUrl(null);
                 setIsLoadingUrl(true); // Show loading while URL refetches
             },
             onError: (err) => {
@@ -223,11 +239,21 @@ export const VariationDetailModal: React.FC<VariationDetailModalProps> = ({
                          {/* Image or Placeholder */}
                          {isLoadingUrl ? (
                              <Loader2 className="h-12 w-12 animate-spin text-muted-foreground" />
-                         ) : signedImageUrl ? (
+                         ) : urlError ? (
+                             <div className="flex flex-col items-center justify-center text-destructive p-4">
+                                <ImageOff className="h-16 w-16 mb-2" />
+                                <span className="text-sm text-center">{urlError}</span>
+                           </div>
+                         ) : imageUrl ? (
                              <img 
-                                 src={signedImageUrl} 
+                                 src={imageUrl} 
                                  alt={`Variation ${variation.variation_letter}`} 
-                                 className="max-w-full max-h-full object-contain"
+                                 className="max-w-full max-h-full object-contain rounded-lg"
+                                 onError={() => {
+                                     console.error(`Failed to load image: ${imageUrl}`);
+                                     setUrlError("Failed to load image from URL.");
+                                     setImageUrl(null); // Clear broken URL
+                                 }}
                              />
                          ) : (
                               <div className="flex flex-col items-center justify-center text-muted-foreground">
@@ -239,11 +265,11 @@ export const VariationDetailModal: React.FC<VariationDetailModalProps> = ({
                          {/* Action Buttons - Adjust conditional rendering */}
                          {/* Container div still shows on hover over the area */}
                          <div className={`absolute bottom-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-20 ${
-                            // Hide entirely if we are actively replacing/deleting
-                            (isReplacingFile || isDeletingVariation) ? 'hidden' : '' 
+                            // Hide entirely if we are actively replacing/deleting or if there's a URL error
+                            (isReplacingFile || isDeletingVariation || urlError) ? 'hidden' : '' 
                          }`}> 
                             {/* Replace Button: Only show if image exists */}
-                            {signedImageUrl && (
+                            {imageUrl && (
                                 <Button 
                                     variant="outline"
                                     size="sm"

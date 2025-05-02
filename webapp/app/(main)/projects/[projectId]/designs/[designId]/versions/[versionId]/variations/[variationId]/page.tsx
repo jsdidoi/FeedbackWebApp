@@ -20,6 +20,8 @@ import { toast } from 'sonner';
 import Dropzone from '@/components/ui/dropzone';
 import { Progress } from "@/components/ui/progress";
 import { useRef } from 'react';
+import { getProcessedImagePath, getPublicImageUrl } from '@/lib/imageUtils';
+import { LARGE_WIDTH } from '@/lib/constants/imageConstants';
 
 // --- Type Definitions ---
 // (Ideally share these globally)
@@ -63,6 +65,10 @@ interface UploadingFileInfo {
   error?: string;
   xhr?: XMLHttpRequest;
 }
+
+// Environment variables (needed for image URLs)
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const processedBucketName = process.env.NEXT_PUBLIC_SUPABASE_PROCESSED_BUCKET;
 
 // --- Fetch Functions ---
 
@@ -178,12 +184,12 @@ export default function VariationDetailPage() {
     const [isEditingVariation, setIsEditingVariation] = useState(false);
     
     // State for upload queue
-    const [uploadQueue, setUploadQueue] = useState<UploadingFileInfo[]>([]); 
+    const [uploadQueue, setUploadQueue] = useState<UploadingFileInfo[]>([]);
     // Ref to hold the latest queue state for callbacks
     const uploadQueueRef = useRef(uploadQueue);
     
-    // State for existing file display
-    const [signedUrl, setSignedUrl] = useState<string | null>(null); 
+    // State for existing file display (changed from signedUrl to imageUrl)
+    const [imageUrl, setImageUrl] = useState<string | null>(null);
     const [urlLoading, setUrlLoading] = useState<boolean>(false);
     const [urlError, setUrlError] = useState<string | null>(null);
 
@@ -236,38 +242,37 @@ export default function VariationDetailPage() {
         uploadQueueRef.current = uploadQueue;
     }, [uploadQueue]);
 
-    // Effect for generating signed URL for existing file
+    // Effect for generating public URL for existing processed file
     useEffect(() => {
-        if (variation?.file_path && supabase) {
-            const generateUrl = async () => {
-                setUrlLoading(true);
-                setUrlError(null);
-                setSignedUrl(null);
-                console.log('(Restored Logic) Attempting to create signed URL for path:', variation.file_path);
-                try {
-                    const { data, error } = await supabase.storage
-                        .from('design-variations') 
-                        .createSignedUrl(variation.file_path!, 60 * 5); // Add ! assertion
-                    
-                    if (error) {
-                        throw error; // Throw the actual storage error
-                    }
-                    if (!data?.signedUrl) {
-                         throw new Error("Received no signed URL from Supabase.");
-                    }
-                    setSignedUrl(data.signedUrl);
-                } catch (error: any) {
-                    // Catch errors from createSignedUrl
-                    console.error("(Restored Logic) Error creating signed URL:", error);
-                    setUrlError(error.message || "Failed to load image URL.");
-                    toast.error("Could not load image preview.");
-                } finally {
-                    setUrlLoading(false);
-                }
-            };
-            generateUrl(); // Call the correct function
+        setUrlLoading(true);
+        setUrlError(null);
+        setImageUrl(null);
+
+        if (!supabaseUrl || !processedBucketName) {
+            setUrlError("Image configuration error.");
+            console.error("Error: NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_PROCESSED_BUCKET is not set.");
+            setUrlLoading(false);
+            return;
         }
-    }, [variation?.file_path, supabase]);
+
+        if (variation?.file_path) {
+            try {
+                const processedPath = getProcessedImagePath(variation.file_path, LARGE_WIDTH);
+                const publicUrl = getPublicImageUrl(supabaseUrl, processedBucketName, processedPath);
+                setImageUrl(publicUrl);
+                setUrlError(null);
+            } catch (err: any) {
+                console.error(`Error generating public URL for ${variation.file_path}:`, err);
+                setUrlError('Failed to generate image URL.');
+                setImageUrl(null);
+            }
+            setUrlLoading(false);
+        } else {
+            // No file path exists for this variation
+            setUrlError(null); // Not an error, just no image
+            setUrlLoading(false);
+        }
+    }, [variation?.file_path, supabaseUrl, processedBucketName]); // Re-run if path or config changes
 
     // Effect to cleanup preview URLs for the upload queue
     useEffect(() => {
@@ -621,12 +626,12 @@ export default function VariationDetailPage() {
                         {urlError && (
                             <p className="text-sm text-red-600">Error loading image: {urlError}</p>
                         )}
-                        {signedUrl && !urlLoading && !urlError && (
-                            <div className="mt-4 border rounded-md p-2 max-w-md mx-auto">
+                        {imageUrl && !urlLoading && !urlError && (
+                            <div className="mt-4 border rounded-lg p-2 max-w-md mx-auto">
                                 <img 
-                                    src={signedUrl} 
+                                    src={imageUrl} 
                                     alt={`Preview for ${getFilenameFromPath(variation.file_path)}`} 
-                                    className="max-w-full h-auto object-contain rounded-md"
+                                    className="max-w-full h-auto object-contain rounded-lg"
                                 />
                             </div>
                         )}
@@ -664,10 +669,10 @@ export default function VariationDetailPage() {
                                                 <img 
                                                     src={fileInfo.previewUrl} 
                                                     alt={`Preview of ${fileInfo.file.name}`} 
-                                                    className="h-10 w-10 object-contain border rounded-sm flex-shrink-0" 
+                                                    className="h-10 w-10 object-contain border rounded-lg flex-shrink-0" 
                                                 />
                                             ) : (
-                                                <div className="h-10 w-10 flex items-center justify-center border rounded-sm bg-muted text-muted-foreground text-xs flex-shrink-0">
+                                                <div className="h-10 w-10 flex items-center justify-center border rounded-lg bg-muted text-muted-foreground text-xs flex-shrink-0">
                                                     No Preview
                                                 </div>
                                             )}

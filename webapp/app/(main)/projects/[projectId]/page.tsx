@@ -2546,14 +2546,14 @@ export default function ProjectsOverviewPage() {
                                     {/* Input Area - Add px-4 and pb-2 */}
                                     <div className="shrink-0 bg-gray-50 pt-2 px-4 pb-2 relative"> {/* <-- ADDED relative CLASS HERE */}
                                                      <div className="relative"> {/* Make this the positioning context */}
-                                                      <Textarea 
-                                                        ref={commentInputRef} 
-                                                        placeholder={replyingToCommentId ? "Write your reply..." : "Add your comment..."} 
-                                                        className="mb-2" 
-                                                        value={newCommentText} 
+                                                     <Textarea 
+                                                         ref={commentInputRef} 
+                                                         placeholder={replyingToCommentId ? "Write your reply..." : "Add your comment..."} 
+                                                         className="mb-2" 
+                                                         value={newCommentText} 
                                                         onChange={handleCommentInputChange} // NEW: Use dedicated handler
-                                                        rows={3}
-                                                      />
+                                                         rows={3}
+                                                     />
                                                       {/* --- @Mention Dropdown (NO PORTAL) --- */}
                                                       {isMentionDropdownOpen && commentInputRef.current && (
                                                         <div

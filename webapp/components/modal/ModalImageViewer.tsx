@@ -4,13 +4,12 @@ import React, { useState, useEffect } from 'react';
 import Image from 'next/image';
 import { useAuth } from '@/providers/AuthProvider';
 import { Loader2, ImageOff } from 'lucide-react';
+import { getProcessedImagePath, getPublicImageUrl } from '@/lib/imageUtils';
+import { LARGE_WIDTH } from '@/lib/constants/imageConstants';
 
 interface ModalImageViewerProps {
   filePath: string | null | undefined;
 }
-
-const BUCKET_NAME = 'design-variations'; // Define bucket name centrally
-const URL_EXPIRY_SECONDS = 300; // 5 minutes
 
 export const ModalImageViewer = ({ filePath }: ModalImageViewerProps) => {
   const { supabase } = useAuth();
@@ -18,50 +17,43 @@ export const ModalImageViewer = ({ filePath }: ModalImageViewerProps) => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const processedBucketName = process.env.NEXT_PUBLIC_SUPABASE_PROCESSED_BUCKET;
+
   useEffect(() => {
-    // Reset state when filePath changes
+    // Reset state
     setImageUrl(null);
     setError(null);
-    setIsLoading(false);
+    setIsLoading(true);
 
-    if (supabase && filePath) {
-      setIsLoading(true);
-      let isMounted = true; // Prevent state update on unmounted component
-
-      const getSignedUrl = async () => {
-        try {
-          const { data, error: signedUrlError } = await supabase.storage
-            .from(BUCKET_NAME)
-            .createSignedUrl(filePath, URL_EXPIRY_SECONDS);
-
-          if (!isMounted) return; // Don't update if component unmounted
-
-          if (signedUrlError) {
-            throw signedUrlError;
-          }
-
-          setImageUrl(data?.signedUrl || null);
-          setError(null);
-        } catch (err: any) {
-          console.error("Error getting signed URL for modal image:", err.message || err);
-          setError("Could not load image preview.");
-          setImageUrl(null);
-        }
+    if (!supabaseUrl || !processedBucketName) {
+        setError("Image configuration error.");
+        console.error("Error: NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_PROCESSED_BUCKET is not set.");
         setIsLoading(false);
-      };
-
-      getSignedUrl();
-
-      // Cleanup function to set isMounted to false when component unmounts
-      return () => {
-        isMounted = false;
-      };
-
-    } else if (!filePath) {
-        // Handle case where there is explicitly no file path
-        setError("No image available for this variation.");
+        return;
     }
-  }, [supabase, filePath]); // Re-run when supabase client or filePath changes
+
+    if (filePath) {
+      try {
+        // 1. Generate the path for the large processed image
+        const processedPath = getProcessedImagePath(filePath, LARGE_WIDTH);
+
+        // 2. Construct the public URL
+        const publicUrl = getPublicImageUrl(supabaseUrl, processedBucketName, processedPath);
+
+        setImageUrl(publicUrl);
+        setError(null);
+      } catch (err: any) {
+        console.error("Error generating processed image URL:", err);
+        setError("Could not generate image URL.");
+        setImageUrl(null);
+      }
+      setIsLoading(false);
+    } else {
+      setError("No image available for this variation.");
+      setIsLoading(false);
+    }
+  }, [filePath, supabaseUrl, processedBucketName]);
 
   return (
     <div className="relative w-full h-full flex items-center justify-center min-h-[300px]"> 
@@ -79,7 +71,13 @@ export const ModalImageViewer = ({ filePath }: ModalImageViewerProps) => {
           fill
           style={{ objectFit: 'contain' }}
           priority
-          onError={() => setError("Failed to load image.")}
+          className="rounded-lg"
+          unoptimized={!imageUrl?.includes(supabaseUrl)}
+          onError={() => {
+            console.error(`Failed to load large image: ${imageUrl}`);
+            setError("Failed to load image.");
+            setImageUrl(null);
+          }}
         />
       ) : (
          // This state should ideally be covered by isLoading or error
