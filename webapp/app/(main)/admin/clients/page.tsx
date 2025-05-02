@@ -30,6 +30,17 @@ import * as z from 'zod';
 import { toast } from 'sonner';
 import { Loader2, PlusCircle } from 'lucide-react';
 import Breadcrumbs, { BreadcrumbItem } from '@/components/ui/breadcrumbs';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 
 // --- Manual Type Definitions (Workaround) ---
 // Based on the 'clients' table schema we created
@@ -219,6 +230,8 @@ export default function ClientsPage() {
               <TableHead>Contact Info</TableHead>
               <TableHead>Created At</TableHead>
               {/* Add Actions column later */}
+              {/* Placeholder for Delete button Column */}
+              <TableHead className="text-right">Actions</TableHead> 
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -229,7 +242,28 @@ export default function ClientsPage() {
                   <TableCell>{client.name}</TableCell>
                   <TableCell>{client.contact_info || '-'}</TableCell>
                    <TableCell>{new Date(client.created_at).toLocaleDateString()}</TableCell>
-                  {/* Actions Cell */}
+                   <TableCell className="text-right">
+                     {/* Placeholder for Delete Button/Dialog */}
+                     <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                           <Button variant="destructive" size="sm">Delete</Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                           <AlertDialogHeader>
+                              <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                This action cannot be undone. This will permanently delete the
+                                client &apos;{client.name}&apos; and all associated projects,
+                                designs, comments, and files.
+                              </AlertDialogDescription>
+                           </AlertDialogHeader>
+                           <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction>Delete Client</AlertDialogAction> {/* TODO: Add onClick handler */} 
+                           </AlertDialogFooter>
+                        </AlertDialogContent>
+                     </AlertDialog>
+                   </TableCell>
                 </TableRow>
               ))
             ) : (

@@ -73,9 +73,14 @@ const processedBucketName = process.env.NEXT_PUBLIC_SUPABASE_PROCESSED_BUCKET;
 // --- Fetch Functions ---
 
 // Fetch Project (for breadcrumbs)
-const fetchProject = async (supabase: any, projectId: string): Promise<Project | null> => {
+const fetchProject = async (supabase: unknown, projectId: string): Promise<Project | null> => {
     if (!projectId) return null;
-    const { data, error } = await supabase.from('projects').select('id, name').eq('id', projectId).single();
+    const client = supabase as any; // Temporary assertion
+    const { data, error } = await client
+        .from('projects')
+        .select('id, name')
+        .eq('id', projectId)
+        .single();
     if (error && error.code !== 'PGRST116') {
         console.error('Error fetching project:', error);
         throw new Error(error.message);
@@ -84,9 +89,14 @@ const fetchProject = async (supabase: any, projectId: string): Promise<Project |
 };
 
 // Fetch Design (for breadcrumbs)
-const fetchDesign = async (supabase: any, designId: string): Promise<Design | null> => {
+const fetchDesign = async (supabase: unknown, designId: string): Promise<Design | null> => {
     if (!designId) return null;
-    const { data, error } = await supabase.from('designs').select('id, name').eq('id', designId).single();
+    const client = supabase as any; // Temporary assertion
+    const { data, error } = await client
+        .from('designs')
+        .select('id, name')
+        .eq('id', designId)
+        .single();
     if (error && error.code !== 'PGRST116') {
         console.error('Error fetching design:', error);
         throw new Error(error.message);
@@ -95,9 +105,14 @@ const fetchDesign = async (supabase: any, designId: string): Promise<Design | nu
 };
 
 // Fetch Version (for breadcrumbs)
-const fetchVersion = async (supabase: any, versionId: string): Promise<Version | null> => {
+const fetchVersion = async (supabase: unknown, versionId: string): Promise<Version | null> => {
     if (!versionId) return null;
-    const { data, error } = await supabase.from('versions').select('id, version_number').eq('id', versionId).single();
+    const client = supabase as any; // Temporary assertion
+    const { data, error } = await client
+        .from('versions')
+        .select('id, version_number')
+        .eq('id', versionId)
+        .single();
     if (error && error.code !== 'PGRST116') {
         console.error('Error fetching version:', error);
         throw new Error(error.message);
@@ -106,9 +121,10 @@ const fetchVersion = async (supabase: any, versionId: string): Promise<Version |
 };
 
 // Fetch Specific Variation
-const fetchVariation = async (supabase: any, variationId: string): Promise<Variation | null> => {
+const fetchVariation = async (supabase: unknown, variationId: string): Promise<Variation | null> => {
     if (!variationId) return null;
-    const { data, error } = await supabase
+    const client = supabase as any; // Temporary assertion
+    const { data, error } = await client
         .from('variations')
         .select('id, version_id, variation_letter, notes, status, created_at, file_path') // Select new field
         .eq('id', variationId)

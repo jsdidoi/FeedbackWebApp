@@ -6,7 +6,7 @@ import { useAuth } from '@/providers/AuthProvider';
 import { useParams } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
 import { Badge } from "@/components/ui/badge";
-import { Loader2, PlusCircle, Pencil, ImageOff, X, Trash2, ImageIcon } from 'lucide-react';
+import { Loader2, PlusCircle, Pencil, ImageIcon, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import Breadcrumbs, { BreadcrumbItem } from '@/components/ui/breadcrumbs';
 import { Button } from '@/components/ui/button';
@@ -87,50 +87,65 @@ type VersionEditFormData = zod.infer<typeof versionEditSchema>;
 // --- Fetch Functions ---
 
 // Fetch Project (for breadcrumbs)
-const fetchProject = async (supabase: any, projectId: string): Promise<Project | null> => {
+const fetchProject = async (supabase: unknown, projectId: string): Promise<Project | null> => {
     if (!projectId) return null;
-    const { data, error } = await supabase.from('projects').select('id, name').eq('id', projectId).single();
-    if (error && error.code !== 'PGRST116') {
-        console.error('Error fetching project:', error);
+    const client = supabase as any; // Temporary assertion
+    const { data, error } = await client
+        .from('projects')
+        .select('id, name')
+        .eq('id', projectId)
+        .single();
+    if (error) {
+        console.error('Error fetching project for breadcrumbs:', error);
+        if (error.code === 'PGRST116') return null;
         throw new Error(error.message);
     }
-    return data;
+    return data as Project | null;
 };
 
 // Fetch Design (for breadcrumbs)
-const fetchDesign = async (supabase: any, designId: string): Promise<Design | null> => {
+const fetchDesign = async (supabase: unknown, designId: string): Promise<Design | null> => {
     if (!designId) return null;
-    const { data, error } = await supabase.from('designs').select('id, name, status').eq('id', designId).single();
-    if (error && error.code !== 'PGRST116') {
+    const client = supabase as any; // Temporary assertion
+    const { data, error } = await client
+        .from('designs')
+        .select('*')
+        .eq('id', designId)
+        .single();
+     if (error) {
         console.error('Error fetching design:', error);
+        if (error.code === 'PGRST116') return null; 
         throw new Error(error.message);
     }
-    return data;
+    return data as Design | null;
 };
 
 // Fetch Specific Version
-const fetchVersion = async (supabase: any, versionId: string): Promise<Version | null> => {
+const fetchVersion = async (supabase: unknown, versionId: string): Promise<Version | null> => {
     if (!versionId) return null;
-    const { data, error } = await supabase
+    const client = supabase as any; // Temporary assertion
+    const { data, error } = await client
         .from('versions')
-        .select('id, design_id, version_number, notes, stage, status, created_at')
+        .select('*') // Select necessary fields
         .eq('id', versionId)
         .single();
-    if (error && error.code !== 'PGRST116') {
+    if (error) {
         console.error('Error fetching version:', error);
+         if (error.code === 'PGRST116') return null; 
         throw new Error(error.message);
     }
-    return data;
+    return data as Version | null;
 };
 
 // Fetch Variations for a Version
-const fetchVariations = async (supabase: any, versionId: string): Promise<Variation[]> => {
+const fetchVariations = async (supabase: unknown, versionId: string): Promise<Variation[]> => {
     if (!versionId) return [];
-    const { data, error } = await supabase
+    const client = supabase as any; // Temporary assertion
+    const { data, error } = await client
         .from('variations')
-        .select('id, variation_letter, status, created_at') // Select needed fields
+        .select('*') // Select necessary fields
         .eq('version_id', versionId)
-        .order('variation_letter', { ascending: true });
+        .order('created_at', { ascending: true });
     if (error) {
         console.error('Error fetching variations:', error);
         throw new Error(error.message);

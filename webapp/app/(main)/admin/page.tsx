@@ -138,6 +138,18 @@ const AdminDashboardPage = () => {
     }
   }, [isPageLoading, user, adminProfile, router]);
 
+  // Effect to set selected roles when a user is selected
+  useEffect(() => {
+    if (selectedUser) {
+      // Ensure roles is an array, default to empty if null/undefined
+      setSelectedRoles(Array.isArray(selectedUser.roles) ? selectedUser.roles : []);
+    } else {
+      setSelectedRoles([]); // Clear roles when no user is selected
+    }
+  }, [selectedUser, selectedRoles]); // Added selectedRoles dependency
+
+  // Define breadcrumb items for this page
+
   if (isPageLoading) {
     return (
       <div className="flex justify-center items-center min-h-[calc(100vh-150px)]">

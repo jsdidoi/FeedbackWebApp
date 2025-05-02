@@ -23,7 +23,6 @@ export default function NewClientPage() {
   // Log the client object to check its validity
   console.log("[NewClientPage] Supabase client from useAuth:", supabase);
 
-  const queryClient = useQueryClient();
   const router = useRouter();
   const [formData, setFormData] = useState<NewClientForm>({ name: '', contact_info: '' });
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -56,13 +55,11 @@ export default function NewClientPage() {
     },
     onSuccess: (data) => {
       toast.success(`Client "${data.name}" created successfully!`);
-      // Optionally invalidate queries related to clients list if we have one
-      // queryClient.invalidateQueries(['clients']);
       router.push('/dashboard'); // Redirect to dashboard or a client list page after creation
     },
     onError: (error) => {
       console.error("Error creating client:", error);
-      toast.error(`Failed to create client: ${error.message}`);
+      toast.error(`Failed to create client: ${error instanceof Error ? error.message : 'An unknown error occurred'}`);
     },
     onSettled: () => {
       setIsSubmitting(false);

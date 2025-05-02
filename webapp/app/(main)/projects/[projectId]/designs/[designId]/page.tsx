@@ -6,7 +6,7 @@ import { useAuth } from '@/providers/AuthProvider';
 import { useParams } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Pencil, Check, X, PlusCircle } from 'lucide-react';
+import { Loader2, Pencil, Check, X, PlusCircle, ImageOff, Eye, EyeOff, Trash2, Upload } from 'lucide-react';
 import Link from 'next/link';
 import Breadcrumbs, { BreadcrumbItem } from '@/components/ui/breadcrumbs';
 import {
@@ -49,11 +49,10 @@ import {
     Design,
     Version,
     DesignStage,
-    DesignOverallStatus,
-    VersionRoundStatus,
-    NewVersionData,
     DesignWithVersions,
-    versionRoundStatuses
+    Variation,
+    VariationFeedbackStatus,
+    NewVersionData,
 } from '@/types/models';
 
 // --- Zod Schema for New Version Form --- 
@@ -80,33 +79,6 @@ const fetchProject = async (supabase: any, projectId: string): Promise<Project |
         throw new Error(error.message);
     }
     return data as Project | null;
-};
-
-// Fetch function for a single design
-const fetchDesign = async (supabase: any, projectId: string, designId: string): Promise<Design | null> => {
-    if (!projectId || !designId) return null;
-    const { data, error } = await supabase
-        .from('designs')
-        .select(`
-            id,
-            project_id,
-            name,
-            status,
-            description,
-            created_at,
-            updated_at,
-            created_by 
-        `)
-        .eq('project_id', projectId)
-        .eq('id', designId)
-        .single();
-
-    if (error) {
-        console.error('Error fetching design:', error);
-        if (error.code === 'PGRST116') return null;
-        throw new Error(`Failed to fetch design: ${error?.message || JSON.stringify(error)}`);
-    }
-    return data as Design | null;
 };
 
 // Fetch function for versions of a design
@@ -175,8 +147,12 @@ const useAddVersion = (designId: string) => {
     const { supabase } = useAuth();
     const queryClient = useQueryClient();
 
-    return useMutation({
-        mutationFn: async (newVersionData: { stage: DesignStage, notes?: string | null }) => {
+    return useMutation<
+        Version,
+        Error,
+        NewVersionData
+    >({
+        mutationFn: async (newVersionData: NewVersionData) => {
             if (!supabase) throw new Error("Supabase client not available");
             if (!designId) throw new Error("Design ID is required");
 
@@ -201,7 +177,7 @@ const useAddVersion = (designId: string) => {
                 version_number: nextVersionNumber,
                 notes: newVersionData.notes || null,
                 stage: newVersionData.stage,
-                status: 'Work in Progress',
+               // status: 'Work in Progress',
             };
 
             // 3. Insert new version
@@ -286,6 +262,48 @@ const fetchDesignWithVersions = async (supabase: any, designId: string): Promise
     };
 
     return result;
+};
+
+const useDesignDetails = (designId: string) => {
+  const supabase = useAuth().supabase;
+  return useQuery<
+    (Design & { versions: (Version & { variations: Variation[], project: Project })[] }) | null,
+    Error // Specify Error type
+  >({
+    queryKey: ['designDetails', designId],
+    queryFn: async () => {
+      if (!supabase || !designId) return null;
+      const { data, error } = await supabase
+        .from('designs')
+        .select(`
+          *,
+          versions ( *,
+            variations ( * ),
+            project ( name ) 
+          )
+        `)
+        .eq('id', designId)
+        .order('version_number', { referencedTable: 'versions', ascending: false })
+        .single();
+
+      if (error) {
+        console.error('Error fetching design details:', error);
+        throw new Error(error.message);
+      }
+      // Type assertion needed as Supabase types might not be perfect
+      return data as (Design & { versions: (Version & { variations: Variation[], project: Project })[] }) | null;
+    },
+    enabled: !!designId,
+  });
+};
+
+const useVersionsForDesign = (designId: string) => {
+  const supabase = useAuth().supabase;
+  return useQuery<Version[]>({
+    queryKey: ['versions', designId],
+    queryFn: () => fetchVersions(supabase, designId),
+    enabled: !!supabase && !!designId,
+  });
 };
 
 export default function DesignDetailPage() {

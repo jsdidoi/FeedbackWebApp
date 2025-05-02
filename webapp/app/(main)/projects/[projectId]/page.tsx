@@ -6,18 +6,10 @@ import { useAuth } from '@/providers/AuthProvider';
 import { useParams, useRouter } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Badge } from "@/components/ui/badge";
-import { Loader2, PlusCircle, Pencil, Check, X, ChevronLeft, ChevronRight, Replace, RefreshCw, Trash2, Archive, Paperclip, XCircle, ChevronDown, Clock } from 'lucide-react';
+import { Loader2, PlusCircle, Pencil, Check, X, ChevronRight, Trash2, Archive } from 'lucide-react';
 import Link from 'next/link';
 import Breadcrumbs, { BreadcrumbItem } from '@/components/ui/breadcrumbs';
 import { Button } from '@/components/ui/button';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import {
   Dialog,
   DialogContent,
@@ -47,11 +39,8 @@ import {
     DesignDetailsData, 
     Version, 
     Variation, 
-    DesignStage, 
-    designOverallStatuses, 
-    DesignOverallStatus, 
+    DesignStage,
     DesignGridItem,
-    VersionRoundStatus,
     VariationFeedbackStatus,
     ProjectStatus
 } from '@/types/models';
@@ -834,7 +823,6 @@ export default function ProjectsOverviewPage() {
     const initialProjectId = params.projectId as string | undefined;
     const [selectedProjectId, setSelectedProjectId] = useState<string | null>(initialProjectId || null);
     const [isEditingProject, setIsEditingProject] = useState(false);
-    const [editFormData, setEditFormData] = useState<Partial<Project>>({});
     const [uploadQueue, setUploadQueue] = useState<UploadingFileInfo[]>([]);
 
     // NEW: State for the Design Detail Modal
@@ -1263,9 +1251,6 @@ export default function ProjectsOverviewPage() {
         });
     };
 
-     const startUpload = (id: string) => { /* TODO */ };
-
-   
      const handleProjectEditClick = () => { /* TODO */ };
      const handleProjectCancelClick = () => { /* TODO */ };
      const handleProjectSaveClick = () => { /* TODO */ };
@@ -1959,7 +1944,7 @@ export default function ProjectsOverviewPage() {
                                                 }}
                                                 disabled={setProjectArchivedStatusMutation.isPending}
                                             >
-                                                <RefreshCw className="h-3 w-3" /> 
+                                                <Archive className="h-3 w-3" /> 
                                             </Button>
                                             {/* Delete Button */}
                                             <AlertDialog>
@@ -2160,11 +2145,11 @@ export default function ProjectsOverviewPage() {
                         <div className="flex-shrink-0">
                           {item.status === 'uploading' && (
                             <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground" onClick={() => handleCancelUpload(item.id)} title="Cancel Upload">
-                              <XCircle className="h-4 w-4" />
+                              <X className="h-4 w-4" />
                             </Button>
                           )}
                           {item.status === 'error' && (
-                            <XCircle className="h-5 w-5 text-red-500" />
+                            <X className="h-5 w-5 text-red-500" />
                           )}
                           {/* Add success checkmark if needed, though items are removed on success */}
                         </div>
@@ -2473,14 +2458,14 @@ export default function ProjectsOverviewPage() {
                                                             <div className="flex-shrink-0">
                                                                 {item.status === 'uploading' && (
                                                                     <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground" onClick={() => handleCancelUpload(item.id)} title="Cancel Upload">
-                                                                        <XCircle className="h-4 w-4" />
+                                                                        <X className="h-4 w-4" />
                                                                     </Button>
                                                                 )}
                                                                 {item.status === 'error' && (
-                                                                    <XCircle className="h-5 w-5 text-red-500" />
+                                                                    <X className="h-5 w-5 text-red-500" />
                                                                 )}
                                                                 {item.status === 'pending' && !item.uploadStarted && (
-                                                                    <Clock className="h-4 w-4 text-muted-foreground" />
+                                                                    <X className="h-4 w-4 text-muted-foreground" />
                                                                 )}
                                                             </div>
                                                         </div>
@@ -2509,7 +2494,7 @@ export default function ProjectsOverviewPage() {
                                                  onClick={handleReplaceVariationClick}
                                                                 disabled={replaceVariationFileMutation.isPending}
                                              >
-                                                                {replaceVariationFileMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                                                                {replaceVariationFileMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Archive className="h-4 w-4" />}
                                              </Button>
                                                         </TooltipTrigger>
                                                         <TooltipContent side="top">
@@ -2660,7 +2645,7 @@ export default function ProjectsOverviewPage() {
                                                                    <li key={index} className="flex items-center justify-between text-xs bg-muted/50 px-2 py-1 rounded-md">
                                                                        <span className="truncate mr-2">{file.name}</span>
                                                             <Button variant="ghost" size="icon" className="h-4 w-4 text-muted-foreground hover:text-destructive shrink-0" onClick={() => handleRemoveSelectedAttachment(file)} title="Remove file">
-                                                                           <XCircle className="h-3 w-3" />
+                                                                           <X className="h-3 w-3" />
                                                                        </Button>
                                                                    </li>
                                                                ))}
@@ -2670,7 +2655,7 @@ export default function ProjectsOverviewPage() {
                                                      <div className="flex items-center justify-end gap-2">
                                           <input type="file" ref={commentAttachmentInputRef} onChange={handleCommentAttachmentFilesSelected} multiple className="hidden" />
                                           <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" title="Attach files" type="button" onClick={() => commentAttachmentInputRef.current?.click()}>
-                                                             <Paperclip className="h-4 w-4" />
+                                                             <Archive className="h-4 w-4" />
                                                          </Button>
                                           <Button size="sm" onClick={() => { if (newCommentText.trim() || selectedAttachmentFiles.length > 0) { addCommentMutation.mutate({ commentText: newCommentText.trim(), parentId: replyingToCommentId, files: selectedAttachmentFiles, onSuccessCallback: () => { setNewCommentText(''); setReplyingToCommentId(null); setSelectedAttachmentFiles([]); } }); } else { toast.info("Comment cannot be empty."); } }} disabled={!currentVariationId || addCommentMutation.isPending}>
                                                              {addCommentMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null} Send

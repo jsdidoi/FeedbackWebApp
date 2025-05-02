@@ -17,14 +17,17 @@ import {
 } from "@/components/ui/card";
 import { toast } from "sonner";
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useRouter } from 'next/navigation';
 
 // --- Component --- 
 const ProfilePage = () => {
+  const router = useRouter();
   const { user, profile, loading, loadingProfile, supabase } = useAuth();
   const queryClient = useQueryClient();
 
   // Local state for editable fields
   const [displayName, setDisplayName] = useState<string>('');
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
 
   // Update local state when profile data loads
   useEffect(() => {
@@ -54,13 +57,12 @@ const ProfilePage = () => {
     },
     onSuccess: () => {
         toast.success("Profile updated successfully!");
-        // Invalidate potentially stale data if profile is used elsewhere,
-        // though AuthProvider should ideally update itself.
-        // queryClient.invalidateQueries({ queryKey: ['profile', user?.id] }); // Example if needed
-         // We might need to manually update the profile state in AuthProvider or trigger a refetch there too.
+        // You might want to invalidate queries related to the profile here
+        // if other parts of the app depend on it
+        // queryClient.invalidateQueries({ queryKey: ['profile', user.id] });
     },
-    onError: (error) => {
-        toast.error(`Failed to update profile: ${error.message}`);
+    onError: (error: unknown) => {
+        toast.error(`Failed to update profile: ${error instanceof Error ? error.message : 'Unknown error'}`);
     },
   });
 

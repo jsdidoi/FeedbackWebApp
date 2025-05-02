@@ -33,12 +33,13 @@ import {
   DialogTrigger,
   DialogClose,
 } from '@/components/ui/dialog';
-import Breadcrumbs, { BreadcrumbItem } from '@/components/ui/breadcrumbs';
 import { PlusCircle, ListFilter, ArrowUpDown, Loader2 } from 'lucide-react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { toast } from 'sonner';
+import { User } from '@supabase/supabase-js';
+import { useSupabaseClient } from '@supabase/auth-helpers-react';
 
 // --- Updated Type Definitions ---
 // Use statuses from DB schema
@@ -82,11 +83,11 @@ const projectSchema = z.object({
 });
 
 // --- Fetch Projects Hook (Use useAuth) ---
-const useProjects = () => {
+const useProjects = (userId: string | undefined) => {
   const { supabase } = useAuth(); 
 
   return useQuery({
-    queryKey: ['projects'],
+    queryKey: ['projects', userId],
     queryFn: async (): Promise<Project[]> => {
       if (!supabase) throw new Error("Supabase client not available"); 
       const { data, error } = await supabase
@@ -113,7 +114,7 @@ const useProjects = () => {
       // Use updated Project type here, casting through unknown first
       return (data as unknown as Project[]) || []; 
     },
-    enabled: !!supabase, 
+    enabled: !!supabase && !!userId, 
   });
 };
 
@@ -173,10 +174,10 @@ const useAddProject = () => {
 
 // --- Dashboard Page Component ---
 export default function DashboardPage() {
-  const { data: projects, isLoading, error } = useProjects();
+  const { user, loadingProfile, profile } = useAuth();
+  const { data: projects, isLoading: isLoadingProjects, error: projectsError } = useProjects(user?.id);
   const { data: clientsForFilter, isLoading: isLoadingClients } = useClientsForFilter();
   const addProjectMutation = useAddProject();
-  const { user } = useAuth(); // Get user for potentially showing add button
 
   // State for filters
   const [selectedClientId, setSelectedClientId] = useState<string>('all');
@@ -187,7 +188,7 @@ export default function DashboardPage() {
   const [sortColumn, setSortColumn] = useState<SortColumn>('created_at');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   // State for Add Project Dialog
-  const [isAddProjectDialogOpen, setIsAddProjectDialogOpen] = useState(false);
+  const [isAddProjectDialogOpen, setIsAddProjectDialogOpenDirect] = useState(false);
 
   // Form hook for Add Project
   const {
@@ -204,10 +205,6 @@ export default function DashboardPage() {
       description: '',
     },
   });
-
-  const breadcrumbItems: BreadcrumbItem[] = [
-    { label: 'Dashboard' } // Current page
-  ];
 
   // --- Sorting Handler ---
   const handleSort = (column: SortColumn) => {
@@ -298,7 +295,7 @@ export default function DashboardPage() {
       {
         onSuccess: () => {
           resetProjectForm({ name: '', description: '', client_id: null }); // Reset form with null client_id
-          setIsAddProjectDialogOpen(false);
+          setIsAddProjectDialogOpenDirect(false);
         },
       }
     );
@@ -306,26 +303,25 @@ export default function DashboardPage() {
 
   // --- Handler for Add Project Dialog Close ---
   const handleAddProjectDialogClose = () => {
-    resetProjectForm();
-    setIsAddProjectDialogOpen(false);
+    resetProjectForm(); // Reset form when dialog closes
+    setIsAddProjectDialogOpenDirect(false);
   }
 
-  if (isLoading) {
+  if (isLoadingProjects) {
     return <div className="flex justify-center items-center h-screen"><Loader2 className="h-8 w-8 animate-spin" /></div>;
   }
 
-  if (error) {
-    return <div className="text-red-600 p-4">Error loading projects: {error.message}</div>;
+  if (projectsError) {
+    return <div className="text-red-600 p-4">Error loading projects: {projectsError.message}</div>;
   }
 
   return (
     <div className="container mx-auto p-4 space-y-4">
-      {/* <Breadcrumbs items={breadcrumbItems} /> */}
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold">Project Dashboard</h1>
         {/* Only show Add Project button if user is logged in? Add role check later? */}
         {user && (
-          <Dialog open={isAddProjectDialogOpen} onOpenChange={setIsAddProjectDialogOpen}>
+          <Dialog open={isAddProjectDialogOpen} onOpenChange={handleAddProjectDialogClose}>
             <DialogTrigger asChild>
                 <Button>
                     <PlusCircle className="mr-2 h-4 w-4" /> Add Project
