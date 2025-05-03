@@ -18,8 +18,8 @@ export const ModalImageViewer = ({ filePath }: ModalImageViewerProps) => {
   const [error, setError] = useState<string | null>(null);
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const safeSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
   const processedBucketName = process.env.NEXT_PUBLIC_SUPABASE_PROCESSED_BUCKET;
-  const safeSupabaseUrl = supabaseUrl || "";
 
   useEffect(() => {
     // Reset state
