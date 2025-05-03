@@ -10,14 +10,6 @@ import Link from 'next/link';
 import Breadcrumbs, { BreadcrumbItem } from '@/components/ui/breadcrumbs';
 import { Button } from '@/components/ui/button';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import {
   Dialog as VariationDialog,
   DialogContent as VariationDialogContent,
   DialogDescription as VariationDialogDescription,
@@ -50,11 +42,10 @@ import {
     Version,
     DesignStage,
     VersionRoundStatus,
-    DesignWithVersions,
     Variation,
-    VariationFeedbackStatus,
     NewVariationData,
     VersionWithDetails,
+    VariationFeedbackStatus
 } from '@/types/models';
 
 // --- Define Queue File Type --- Added
@@ -85,73 +76,6 @@ const versionEditSchema = zod.object({
 type VersionEditFormData = zod.infer<typeof versionEditSchema>;
 
 // --- Fetch Functions ---
-
-// Fetch Project (for breadcrumbs)
-const fetchProject = async (supabase: unknown, projectId: string): Promise<Project | null> => {
-    if (!projectId) return null;
-    const client = supabase as any; // Temporary assertion
-    const { data, error } = await client
-        .from('projects')
-        .select('id, name')
-        .eq('id', projectId)
-        .single();
-    if (error) {
-        console.error('Error fetching project for breadcrumbs:', error);
-        if (error.code === 'PGRST116') return null;
-        throw new Error(error.message);
-    }
-    return data as Project | null;
-};
-
-// Fetch Design (for breadcrumbs)
-const fetchDesign = async (supabase: unknown, designId: string): Promise<Design | null> => {
-    if (!designId) return null;
-    const client = supabase as any; // Temporary assertion
-    const { data, error } = await client
-        .from('designs')
-        .select('*')
-        .eq('id', designId)
-        .single();
-     if (error) {
-        console.error('Error fetching design:', error);
-        if (error.code === 'PGRST116') return null; 
-        throw new Error(error.message);
-    }
-    return data as Design | null;
-};
-
-// Fetch Specific Version
-const fetchVersion = async (supabase: unknown, versionId: string): Promise<Version | null> => {
-    if (!versionId) return null;
-    const client = supabase as any; // Temporary assertion
-    const { data, error } = await client
-        .from('versions')
-        .select('*') // Select necessary fields
-        .eq('id', versionId)
-        .single();
-    if (error) {
-        console.error('Error fetching version:', error);
-         if (error.code === 'PGRST116') return null; 
-        throw new Error(error.message);
-    }
-    return data as Version | null;
-};
-
-// Fetch Variations for a Version
-const fetchVariations = async (supabase: unknown, versionId: string): Promise<Variation[]> => {
-    if (!versionId) return [];
-    const client = supabase as any; // Temporary assertion
-    const { data, error } = await client
-        .from('variations')
-        .select('*') // Select necessary fields
-        .eq('version_id', versionId)
-        .order('created_at', { ascending: true });
-    if (error) {
-        console.error('Error fetching variations:', error);
-        throw new Error(error.message);
-    }
-    return data || [];
-};
 
 // TODO: Fetch function for a single version and its details
 const fetchVersionWithDetails = async (

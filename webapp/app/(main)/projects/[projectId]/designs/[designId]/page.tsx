@@ -21,14 +21,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import {
   Dialog as VersionDialog,
   DialogContent as VersionDialogContent,
   DialogDescription as VersionDialogDescription,
@@ -42,16 +34,19 @@ import { Label as VersionLabel } from "@/components/ui/label";
 import { Controller, useForm as useVersionForm } from 'react-hook-form';
 import { zodResolver as versionZodResolver } from '@hookform/resolvers/zod';
 import * as versionZod from 'zod';
-
-// --- Import types from central location --- 
 import {
-    Project,
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from '@/components/ui/table';
+import {
     Design,
     Version,
     DesignStage,
     DesignWithVersions,
-    Variation,
-    VariationFeedbackStatus,
     NewVersionData,
     VersionRoundStatus,
 } from '@/types/models';
@@ -65,22 +60,6 @@ const versionSchema = versionZod.object({
       invalid_type_error: "Invalid stage selected", 
   }),
 });
-
-// Fetch function for a single project (needed for breadcrumbs)
-const fetchProject = async (supabase: any, projectId: string): Promise<Project | null> => {
-    if (!projectId) return null;
-    const { data, error } = await supabase
-        .from('projects')
-        .select('id, name')
-        .eq('id', projectId)
-        .single();
-    if (error) {
-        console.error('Error fetching project for breadcrumbs:', error);
-        if (error.code === 'PGRST116') return null;
-        throw new Error(error.message);
-    }
-    return data as Project | null;
-};
 
 // Fetch function for versions of a design
 const fetchVersions = async (supabase: any, designId: string): Promise<Version[]> => {
@@ -265,68 +244,17 @@ const fetchDesignWithVersions = async (supabase: any, designId: string): Promise
     return result;
 };
 
-const useDesignDetails = (designId: string) => {
-  const supabase = useAuth().supabase;
-  return useQuery<
-    (Design & { versions: (Version & { variations: Variation[], project: Project })[] }) | null,
-    Error // Specify Error type
-  >({
-    queryKey: ['designDetails', designId],
-    queryFn: async () => {
-      if (!supabase || !designId) return null;
-      const { data, error } = await supabase
-        .from('designs')
-        .select(`
-          *,
-          versions ( *,
-            variations ( * ),
-            project ( name ) 
-          )
-        `)
-        .eq('id', designId)
-        .order('version_number', { referencedTable: 'versions', ascending: false })
-        .single();
-
-      if (error) {
-        console.error('Error fetching design details:', error);
-        throw new Error(error.message);
-      }
-      // Type assertion needed as Supabase types might not be perfect
-      return data as (Design & { versions: (Version & { variations: Variation[], project: Project })[] }) | null;
-    },
-    enabled: !!designId,
-  });
-};
-
-const useVersionsForDesign = (designId: string) => {
-  const supabase = useAuth().supabase;
-  return useQuery<Version[]>({
-    queryKey: ['versions', designId],
-    queryFn: () => fetchVersions(supabase, designId),
-    enabled: !!supabase && !!designId,
-  });
-};
-
 export default function DesignDetailPage() {
     const { supabase } = useAuth();
     const params = useParams();
     const projectId = params.projectId as string;
     const designId = params.designId as string;
-    const queryClient = useQueryClient();
 
     // Edit State
     const [isEditing, setIsEditing] = useState(false);
     const [editedName, setEditedName] = useState('');
     const [editedDescription, setEditedDescription] = useState<string | null>('');
     const [isAddVersionDialogOpen, setIsAddVersionDialogOpen] = useState(false);
-
-    // Fetch Project details (for breadcrumbs)
-    const { data: project, isLoading: isLoadingProject } = useQuery({
-        queryKey: ['project', projectId],
-        queryFn: () => fetchProject(supabase, projectId),
-        enabled: !!supabase && !!projectId,
-        staleTime: Infinity, // Project name unlikely to change often while viewing design
-    });
 
     // Fetch Design details with its versions
     const { data: designData, isLoading: isLoadingDesign, error: designError } = useQuery<DesignWithVersions | null>({
@@ -336,7 +264,7 @@ export default function DesignDetailPage() {
     });
 
     // Fetch Versions for this design
-    const { data: versions, isLoading: isLoadingVersions, error: versionsError } = useQuery<Version[]>({
+    const { data: versions, isLoading: isLoadingVersions } = useQuery<Version[]>({
         queryKey: ['versions', designId],
         queryFn: () => fetchVersions(supabase, designId),
         enabled: !!supabase && !!designId,
@@ -407,7 +335,6 @@ export default function DesignDetailPage() {
         updateDetailsMutation.mutate({ name: trimmedName, description: editedDescription }, {
             onSuccess: (data) => {
                 toast.success(`Design "${data.name}" details updated!`);
-                queryClient.invalidateQueries({ queryKey: ['design', projectId, designId] });
                 setIsEditing(false); 
             },
         });
@@ -426,7 +353,6 @@ export default function DesignDetailPage() {
         }, {
             onSuccess: (data) => {
                 toast.success(`Version V${data.version_number} (${data.stage}) added successfully!`);
-                queryClient.invalidateQueries({ queryKey: ['versions', designId] }); 
                 resetVersionForm();
                 setIsAddVersionDialogOpen(false); 
             },
@@ -434,7 +360,7 @@ export default function DesignDetailPage() {
     };
 
     // Combined Loading State
-    if (isLoadingProject || isLoadingDesign || isLoadingVersions) {
+    if (isLoadingDesign || isLoadingVersions) {
         return <div className="flex justify-center items-center h-screen"><Loader2 className="h-8 w-8 animate-spin" /> Loading Design Details...</div>;
     }
 
@@ -466,7 +392,7 @@ export default function DesignDetailPage() {
     // Define breadcrumb items
     const breadcrumbItems: BreadcrumbItem[] = [
         { label: 'Dashboard', href: '/dashboard' },
-        { label: project?.name ?? 'Project', href: `/projects/${projectId}` },
+        { label: projectId, href: `/projects/${projectId}` },
         { label: designData.name } // Current design page
     ];
 
@@ -491,7 +417,7 @@ export default function DesignDetailPage() {
                                <CardTitle className="text-2xl mb-1">{designData.name}</CardTitle>
                            )}
                             <CardDescription>
-                                Part of project: <Link href={`/projects/${projectId}`} className="hover:underline">{project?.name ?? '...'}</Link>
+                                Part of project: <Link href={`/projects/${projectId}`} className="hover:underline">{projectId}</Link>
                             </CardDescription>
                         </div>
                         

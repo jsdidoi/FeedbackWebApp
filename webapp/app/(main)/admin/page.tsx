@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth, UserProfile } from '@/providers/AuthProvider';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
-import ErrorMessage from '@/components/ui/ErrorMessage';
 import { useRouter } from 'next/navigation';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
@@ -27,10 +26,10 @@ import { toast } from "sonner";
 
 // Function to fetch profiles (can be defined outside component)
 const fetchProfiles = async (supabase: unknown): Promise<UserProfile[]> => {
-  if (!supabase || typeof (supabase as any).from !== 'function') {
+  if (!supabase || typeof (supabase as unknown as { from: Function }).from !== 'function') {
     throw new Error('Invalid supabase client');
   }
-  const { data, error } = await (supabase as any)
+  const { data, error } = await (supabase as unknown as { from: Function })
     .from('profiles')
     .select('id, display_name, email, role, created_at') // Fetch relevant fields
     .order('created_at', { ascending: true }); // Order by creation date
@@ -48,10 +47,10 @@ const updateProfileRole = async (
   userId: string,
   newRole: UserProfile['role']
 ): Promise<UserProfile> => {
-  if (!supabase || typeof (supabase as any).from !== 'function') {
+  if (!supabase || typeof (supabase as unknown as { from: Function }).from !== 'function') {
     throw new Error('Invalid supabase client');
   }
-  const { data, error } = await (supabase as any)
+  const { data, error } = await (supabase as unknown as { from: Function })
     .from('profiles')
     .update({ role: newRole, updated_at: new Date().toISOString() })
     .eq('id', userId)
@@ -95,8 +94,7 @@ const AdminDashboardPage = () => {
              setSelectedRoles(initialRoles);
           }
       }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profiles, selectedRoles]); // Added selectedRoles to dependencies as it is referenced
+  }, [profiles, selectedRoles]);
 
   // Update profile role mutation
   const updateRoleMutation = useMutation<
