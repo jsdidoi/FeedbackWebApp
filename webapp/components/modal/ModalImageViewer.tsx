@@ -19,6 +19,7 @@ export const ModalImageViewer = ({ filePath }: ModalImageViewerProps) => {
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const processedBucketName = process.env.NEXT_PUBLIC_SUPABASE_PROCESSED_BUCKET;
+  const safeSupabaseUrl = supabaseUrl || "";
 
   useEffect(() => {
     // Reset state
@@ -72,7 +73,7 @@ export const ModalImageViewer = ({ filePath }: ModalImageViewerProps) => {
           style={{ objectFit: 'contain' }}
           priority
           className="rounded-lg"
-          unoptimized={!((imageUrl ?? "").includes(supabaseUrl ?? ""))}
+          unoptimized={!((imageUrl ?? "").includes(safeSupabaseUrl))}
           onError={() => {
             console.error(`Failed to load large image: ${imageUrl}`);
             setError("Failed to load image.");
