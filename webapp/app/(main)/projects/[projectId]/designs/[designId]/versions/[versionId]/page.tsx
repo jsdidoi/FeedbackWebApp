@@ -6,7 +6,6 @@ import { useAuth } from '@/providers/AuthProvider';
 import { useParams } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
 import { Badge } from "@/components/ui/badge";
-import { Loader2, PlusCircle, Pencil, ImageIcon, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import Breadcrumbs, { BreadcrumbItem } from '@/components/ui/breadcrumbs';
 import { Button } from '@/components/ui/button';
@@ -42,6 +41,7 @@ import Dropzone from '@/components/ui/dropzone';
 import { FileRejection } from 'react-dropzone';
 import Image from 'next/image';
 import { nanoid } from 'nanoid';
+import { Loader2, PlusCircle, Pencil, ImageIcon, Trash2 } from 'lucide-react';
 
 // --- Import types from central location --- 
 import {

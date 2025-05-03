@@ -21,13 +21,13 @@ import { useRouter } from 'next/navigation';
 
 // --- Component --- 
 const ProfilePage = () => {
-  const router = useRouter();
+  // TODO: Uncomment if navigation is needed in future// const router = useRouter();
   const { user, profile, loading, loadingProfile, supabase } = useAuth();
-  const queryClient = useQueryClient();
+  // TODO: Uncomment if you need to invalidate queries in the future// const queryClient = useQueryClient();
 
   // Local state for editable fields
   const [displayName, setDisplayName] = useState<string>('');
-  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  // TODO: Uncomment for avatar upload feature// const [avatarFile, setAvatarFile] = useState<File | null>(null);
 
   // Update local state when profile data loads
   useEffect(() => {

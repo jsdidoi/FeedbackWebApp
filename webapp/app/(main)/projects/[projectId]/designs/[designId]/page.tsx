@@ -6,7 +6,7 @@ import { useAuth } from '@/providers/AuthProvider';
 import { useParams } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Pencil, Check, X, PlusCircle, ImageOff, Eye, EyeOff, Trash2, Upload } from 'lucide-react';
+import { Loader2, Pencil, Check, X, PlusCircle } from 'lucide-react'; // Removed unused icons: ImageOff, Eye, EyeOff, Trash2, Upload
 import Link from 'next/link';
 import Breadcrumbs, { BreadcrumbItem } from '@/components/ui/breadcrumbs';
 import {
@@ -53,6 +53,7 @@ import {
     Variation,
     VariationFeedbackStatus,
     NewVersionData,
+    VersionRoundStatus,
 } from '@/types/models';
 
 // --- Zod Schema for New Version Form --- 
@@ -177,7 +178,7 @@ const useAddVersion = (designId: string) => {
                 version_number: nextVersionNumber,
                 notes: newVersionData.notes || null,
                 stage: newVersionData.stage,
-               // status: 'Work in Progress',
+                status: VersionRoundStatus.WorkInProgress,
             };
 
             // 3. Insert new version
@@ -414,7 +415,15 @@ export default function DesignDetailPage() {
 
     // Add Version Submit Handler
     const handleAddVersionSubmit = (values: versionZod.infer<typeof versionSchema>) => {
-        addVersionMutation.mutate({ notes: values.notes, stage: values.stage }, {
+        // Compute next version number
+        const nextVersionNumber = versions && versions.length > 0 ? (versions[versions.length - 1].version_number + 1) : 1;
+        addVersionMutation.mutate({
+            design_id: designId,
+            version_number: nextVersionNumber,
+            notes: values.notes || null,
+            stage: values.stage,
+            status: VersionRoundStatus.WorkInProgress,
+        }, {
             onSuccess: (data) => {
                 toast.success(`Version V${data.version_number} (${data.stage}) added successfully!`);
                 queryClient.invalidateQueries({ queryKey: ['versions', designId] }); 
@@ -556,7 +565,7 @@ export default function DesignDetailPage() {
                             <VersionDialogHeader>
                                 <VersionDialogTitle>Add New Version V{versions ? (versions[versions.length - 1]?.version_number ?? 0) + 1 : 1}</VersionDialogTitle>
                                 <VersionDialogDescription>
-Select the stage for this new version and add optional notes. Status will default to 'Work in Progress'.
+Select the stage for this new version and add optional notes. Status will default to &apos;Work in Progress&apos;.
                                 </VersionDialogDescription>
                             </VersionDialogHeader>
                             <form onSubmit={handleSubmitVersion(handleAddVersionSubmit)} className="space-y-4">

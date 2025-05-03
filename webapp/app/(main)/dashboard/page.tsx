@@ -38,8 +38,8 @@ import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { toast } from 'sonner';
-import { User } from '@supabase/supabase-js';
-import { useSupabaseClient } from '@supabase/auth-helpers-react';
+// import { User } from '@supabase/supabase-js';
+// import { useSupabaseClient } from '@supabase/auth-helpers-react';
 
 // --- Updated Type Definitions ---
 // Use statuses from DB schema
