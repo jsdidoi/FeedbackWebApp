@@ -1066,4 +1066,41 @@ export const useDeleteComment = (variationId: string | null) => {
             toast.error(`Failed to delete comment: ${error.message}`);
         },
     }); 
-} 
+}
+
+// --- Update Variation Status Hook ---
+export const useUpdateVariationStatus = (versionId: string, variationId: string) => {
+    const { supabase } = useAuth();
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async (newStatus: VariationFeedbackStatus) => {
+            if (!supabase) throw new Error("Supabase client not available");
+            if (!variationId) throw new Error("Variation ID is required to update status");
+
+            const { data, error } = await supabase
+                .from('variations')
+                .update({ 
+                    status: newStatus,
+                    updated_at: new Date().toISOString() 
+                })
+                .eq('id', variationId)
+                .select('id, variation_letter, status') // Select minimal data needed
+                .single();
+
+            if (error) {
+                console.error(`Error updating variation ${variationId} status to ${newStatus}:`, error);
+                throw new Error(`Failed to update variation status: ${error.message}`);
+            }
+            return data;
+        },
+        onSuccess: (data, variables) => {
+            toast.success(`Variation ${data.variation_letter} status updated to ${data.status}.`);
+            // Invalidate the parent version query using the passed versionId
+            queryClient.invalidateQueries({ queryKey: ['version', versionId, 'details'] });
+        },
+        onError: (error: Error, variables) => {
+            toast.error(`Failed to update status to ${variables}: ${error.message}`);
+        },
+    });
+}; 

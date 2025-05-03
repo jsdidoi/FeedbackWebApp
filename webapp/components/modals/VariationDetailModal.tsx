@@ -17,7 +17,7 @@ import { Variation, Project, Design, Version } from '@/types/models'; // Import 
 import { useAuth } from '@/providers/AuthProvider'; // To get supabase for signed URLs
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from 'sonner';
-import { useUpdateVariationStatus, useReplaceVariationFile, useDeleteVariation } from '@/app/(main)/projects/[projectId]/designs/[designId]/versions/[versionId]/page'; // Updated import
+import { useUpdateVariationStatus, useReplaceVariationFile, useDeleteVariation } from '@/hooks/mutations';
 import { VariationFeedbackStatus } from '@/types/models';
 import { getProcessedImagePath, getPublicImageUrl } from '@/lib/imageUtils';
 import { LARGE_WIDTH } from '@/lib/constants/imageConstants';
