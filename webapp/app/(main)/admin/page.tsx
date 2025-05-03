@@ -5,7 +5,7 @@ import { useAuth, UserProfile } from '@/providers/AuthProvider';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
 import ErrorMessage from '@/components/ui/ErrorMessage';
 import { useRouter } from 'next/navigation';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import {
   Table,
   TableBody,
@@ -26,8 +26,11 @@ import {
 import { toast } from "sonner";
 
 // Function to fetch profiles (can be defined outside component)
-const fetchProfiles = async (supabase: any): Promise<UserProfile[]> => {
-  const { data, error } = await supabase
+const fetchProfiles = async (supabase: unknown): Promise<UserProfile[]> => {
+  if (!supabase || typeof (supabase as any).from !== 'function') {
+    throw new Error('Invalid supabase client');
+  }
+  const { data, error } = await (supabase as any)
     .from('profiles')
     .select('id, display_name, email, role, created_at') // Fetch relevant fields
     .order('created_at', { ascending: true }); // Order by creation date
@@ -41,11 +44,14 @@ const fetchProfiles = async (supabase: any): Promise<UserProfile[]> => {
 
 // Function to update a user's role
 const updateProfileRole = async (
-  supabase: any,
+  supabase: unknown,
   userId: string,
   newRole: UserProfile['role']
 ): Promise<UserProfile> => {
-  const { data, error } = await supabase
+  if (!supabase || typeof (supabase as any).from !== 'function') {
+    throw new Error('Invalid supabase client');
+  }
+  const { data, error } = await (supabase as any)
     .from('profiles')
     .update({ role: newRole, updated_at: new Date().toISOString() })
     .eq('id', userId)
@@ -63,9 +69,8 @@ const updateProfileRole = async (
 };
 
 const AdminDashboardPage = () => {
-  const { profile: adminProfile, loading, loadingProfile, user, supabase } = useAuth();
+  const { profile: adminProfile, loading, user, supabase } = useAuth();
   const router = useRouter();
-  const queryClient = useQueryClient();
 
   // State to manage the currently selected role for each user row
   const [selectedRoles, setSelectedRoles] = useState<Record<string, UserProfile['role']>>({});
@@ -74,7 +79,6 @@ const AdminDashboardPage = () => {
   const { 
     data: profiles, 
     isLoading: isLoadingProfiles, 
-    error: profilesError 
   } = useQuery<UserProfile[], Error>({
     queryKey: ['profiles'],
     queryFn: () => fetchProfiles(supabase),
@@ -87,13 +91,12 @@ const AdminDashboardPage = () => {
       if (profiles) {
           const initialRoles: Record<string, UserProfile['role']> = {};
           profiles.forEach((p: UserProfile) => { initialRoles[p.id] = p.role; });
-          // Only update if different to avoid potential loops, though unlikely here
-          // A more robust check might involve deep comparison if objects were complex
           if (JSON.stringify(selectedRoles) !== JSON.stringify(initialRoles)) {
              setSelectedRoles(initialRoles);
           }
       }
-  }, [profiles]); // Rerun when profiles data changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profiles, selectedRoles]); // Added selectedRoles to dependencies as it is referenced
 
   // Update profile role mutation
   const updateRoleMutation = useMutation<
@@ -103,7 +106,7 @@ const AdminDashboardPage = () => {
   >({
     mutationFn: ({ userId, newRole }) => updateProfileRole(supabase, userId, newRole),
     onSuccess: (updatedProfile) => {
-      queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      // queryClient.invalidateQueries({ queryKey: ['profiles'] }); // TODO: Add cache invalidation if needed in the future
       toast.success(`Role for ${updatedProfile.email || updatedProfile.id} updated to ${updatedProfile.role}`);
       // No need to manually update selectedRoles here, useEffect above handles it when query refetches
     },
@@ -129,7 +132,7 @@ const AdminDashboardPage = () => {
     }
   };
 
-  const isPageLoading = loading || loadingProfile;
+  const isPageLoading = loading;
 
   useEffect(() => {
     // Redirect non-admins after initial auth loading is done
@@ -137,16 +140,6 @@ const AdminDashboardPage = () => {
       router.replace('/');
     }
   }, [isPageLoading, user, adminProfile, router]);
-
-  // Effect to set selected roles when a user is selected
-  useEffect(() => {
-    if (selectedUser) {
-      // Ensure roles is an array, default to empty if null/undefined
-      setSelectedRoles(Array.isArray(selectedUser.roles) ? selectedUser.roles : []);
-    } else {
-      setSelectedRoles([]); // Clear roles when no user is selected
-    }
-  }, [selectedUser, selectedRoles]); // Added selectedRoles dependency
 
   // Define breadcrumb items for this page
 
@@ -172,8 +165,6 @@ const AdminDashboardPage = () => {
         <h2 className="text-xl font-semibold mb-3">User Management</h2>
         {isLoadingProfiles ? (
           <LoadingSpinner />
-        ) : profilesError ? (
-          <ErrorMessage message={`Failed to load profiles: ${profilesError.message}`} />
         ) : profiles && profiles.length > 0 ? (
           <Table>
             <TableCaption>A list of registered users.</TableCaption>

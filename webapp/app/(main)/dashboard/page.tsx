@@ -174,7 +174,7 @@ const useAddProject = () => {
 
 // --- Dashboard Page Component ---
 export default function DashboardPage() {
-  const { user, loadingProfile, profile } = useAuth();
+  const { user } = useAuth();
   const { data: projects, isLoading: isLoadingProjects, error: projectsError } = useProjects(user?.id);
   const { data: clientsForFilter, isLoading: isLoadingClients } = useClientsForFilter();
   const addProjectMutation = useAddProject();
