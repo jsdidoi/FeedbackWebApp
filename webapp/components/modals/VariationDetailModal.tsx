@@ -108,7 +108,6 @@ export const VariationDetailModal: React.FC<VariationDetailModalProps> = ({
     const updateStatusMutation = useUpdateVariationStatus(versionId, variation?.id || '');
     const replaceFileMutation = useReplaceVariationFile(
         variation?.id || '', 
-        versionId, 
         designId || '', 
         projectId || '' 
     ); 
@@ -144,7 +143,7 @@ export const VariationDetailModal: React.FC<VariationDetailModalProps> = ({
         setIsReplacingFile(true);
 
         // Call the actual replacement mutation hook
-        replaceFileMutation.mutate({ newFile: file, oldFilePath: variation.file_path }, {
+        replaceFileMutation.mutate({ file: file }, {
             onSuccess: () => {
                 console.log("File replaced successfully");
                 // Force a refetch of the signed URL by temporarily clearing it
@@ -180,7 +179,7 @@ export const VariationDetailModal: React.FC<VariationDetailModalProps> = ({
 
         // Call the renamed delete mutation hook
         // Pass the file path for storage cleanup attempt
-        deleteVariationMutation.mutate({ filePath: variation.file_path }, { 
+        deleteVariationMutation.mutate(undefined, { 
             onSuccess: () => {
                 console.log('Variation deleted successfully via hook');
                 // Close the modal on success
