@@ -72,7 +72,7 @@ export const ModalImageViewer = ({ filePath }: ModalImageViewerProps) => {
           style={{ objectFit: 'contain' }}
           priority
           className="rounded-lg"
-          unoptimized={!imageUrl?.includes(supabaseUrl)}
+          unoptimized={!((imageUrl ?? "").includes(supabaseUrl ?? ""))}
           onError={() => {
             console.error(`Failed to load large image: ${imageUrl}`);
             setError("Failed to load image.");
