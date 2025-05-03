@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import { SupabaseClient } from '@supabase/supabase-js';
 
 // Define a minimal Supabase client type for type safety
 interface MinimalSupabaseClient {
@@ -33,22 +34,36 @@ function hasFromMethod(obj: unknown): obj is MinimalSupabaseClient {
   return typeof obj === 'object' && obj !== null && typeof (obj as MinimalSupabaseClient).from === 'function';
 }
 
+function hasMessage(error: unknown): error is { message: string } {
+  return typeof error === 'object' && error !== null && 'message' in error && typeof (error as any).message === 'string';
+}
+
+// Define a minimal Supabase response type
+interface SupabaseResponse<T> {
+  data: T;
+  error: { message: string } | null;
+}
+
 // Function to fetch profiles (can be defined outside component)
 const fetchProfiles = async (supabase: unknown): Promise<UserProfile[]> => {
   if (!hasFromMethod(supabase)) {
     throw new Error('Invalid supabase client');
   } else {
-    const typedSupabase = supabase as MinimalSupabaseClient;
-    const result: any = await typedSupabase
+    const typedSupabase = supabase as SupabaseClient<any>;
+    const result = await (typedSupabase
       .from('profiles')
-      .select('id, display_name, email, role, created_at') // Fetch relevant fields
-      .order('created_at', { ascending: true });
+      .select('id, display_name, email, role, created_at')
+      .order('created_at', { ascending: true })
+    ) as SupabaseResponse<UserProfile[]>;
     const data: UserProfile[] = result.data;
-    // @ts-expect-error: Supabase error type is unknown, but we expect message property
-    const error: any = result.error;
-
+    const error = result.error;
     if (error) {
-      const errorMsg = error?.message ? error.message : String(error);
+      let errorMsg: string;
+      if (hasMessage(error)) {
+        errorMsg = error.message;
+      } else {
+        errorMsg = String(error);
+      }
       console.error("Error fetching profiles:", errorMsg);
       throw new Error(errorMsg);
     }
@@ -65,19 +80,23 @@ const updateProfileRole = async (
   if (!hasFromMethod(supabase)) {
     throw new Error('Invalid supabase client');
   } else {
-    const typedSupabase = supabase as MinimalSupabaseClient;
-    const result: any = await typedSupabase
+    const typedSupabase = supabase as SupabaseClient<any>;
+    const result = await (typedSupabase
       .from('profiles')
       .update({ role: newRole, updated_at: new Date().toISOString() })
       .eq('id', userId)
-      .select('id, display_name, email, role, created_at') // Select updated data
-      .single();
+      .select('id, display_name, email, role, created_at')
+      .single()
+    ) as SupabaseResponse<UserProfile>;
     const data: UserProfile = result.data;
-    // @ts-expect-error: Supabase error type is unknown, but we expect message property
-    const error: any = result.error;
-
+    const error = result.error;
     if (error) {
-      const errorMsg = error?.message ? error.message : String(error);
+      let errorMsg: string;
+      if (hasMessage(error)) {
+        errorMsg = error.message;
+      } else {
+        errorMsg = String(error);
+      }
       console.error("Error updating profile role:", errorMsg);
       throw new Error(errorMsg);
     }
