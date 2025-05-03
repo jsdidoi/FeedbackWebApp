@@ -89,6 +89,7 @@ import {
     useDeleteComment
 } from '@/hooks/mutations'; // Reverted: Assuming this path is correct despite linter
 import { Controller } from "react-hook-form"; // Import Controller
+import Image from 'next/image';
 
 // For Upload Queue
 interface UploadingFileInfo {
@@ -1874,7 +1875,7 @@ export default function ProjectsOverviewPage() {
                                        <AlertDialogHeader>
                                            <AlertDialogTitle>Are you sure?</AlertDialogTitle>
                                            <AlertDialogDescription>
-                                               Permanently delete project "{project.name}"? This cannot be undone.
+                                               Permanently delete project &quot;{project.name}&quot;? This cannot be undone.
                                            </AlertDialogDescription>
                                        </AlertDialogHeader>
                                        <AlertDialogFooter>
@@ -1964,7 +1965,7 @@ export default function ProjectsOverviewPage() {
                                                      <AlertDialogHeader>
                                                          <AlertDialogTitle>Are you sure?</AlertDialogTitle>
                                                          <AlertDialogDescription>
-                                                             Permanently delete project "{project.name}"? This cannot be undone.
+                                                             Permanently delete project &quot;{project.name}&quot;? This cannot be undone.
                                                          </AlertDialogDescription>
                                                      </AlertDialogHeader>
                                                      <AlertDialogFooter>
@@ -2125,7 +2126,7 @@ export default function ProjectsOverviewPage() {
                   <div className="mt-4 space-y-2">
                                 {uploadQueue.map(item => (
                       <div key={item.id} className="flex items-center gap-3 p-2 border rounded-md bg-muted/30">
-                        <img src={item.previewUrl} alt={item.file.name} className="h-10 w-10 object-cover rounded" />
+                        <Image src={item.previewUrl} alt={item.file.name} width={40} height={40} className="h-10 w-10 object-cover rounded" />
                         <div className="flex-grow space-y-1">
                           <p className="text-sm font-medium truncate">{item.file.name}</p>
                           {item.status === 'uploading' && (
@@ -2439,7 +2440,7 @@ export default function ProjectsOverviewPage() {
 
                                                     return (
                                                         <div key={item.id} className="flex items-center gap-3 p-2 border rounded-md bg-background">
-                                                            <img src={item.previewUrl} alt={item.file.name} className="h-8 w-8 object-cover rounded flex-shrink-0" />
+                                                            <Image src={item.previewUrl} alt={item.file.name} width={32} height={32} className="h-8 w-8 object-cover rounded flex-shrink-0" />
                                                             <div className="flex-grow space-y-1 min-w-0">
                                                                 <p className="text-xs font-medium truncate" title={item.file.name}>{item.file.name}</p>
                                                                 {item.status === 'uploading' ? (

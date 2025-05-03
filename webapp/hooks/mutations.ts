@@ -135,7 +135,7 @@ export const useAddVersionWithVariations = (
                     }
                     createdVariations.push(createdVar);
                 }
-            } catch (error: any) {
+            } catch (error: unknown) {
                  // Clean up already created version if variation creation fails? Or let user handle it?
                  // For now, just re-throw
                  console.error("Error during sequential variation record creation:", error);
@@ -147,7 +147,7 @@ export const useAddVersionWithVariations = (
             // --- 4. Concurrently upload files and update records ---
             const results: PromiseSettledResult<Variation>[] = []; // Keep for consistency, but populated differently
             const allUploadPromises: Promise<Variation>[] = []; // Store all raw promises
-            let activePromises: Promise<any>[] = [];
+            let activePromises: Promise<unknown>[] = [];
 
             const processFileUploadAndUpdate = async (file: File, variationRecord: Variation): Promise<Variation> => {
                 const fileId = `${variationRecord.version_id}-${variationRecord.variation_letter}-${Date.now()}`;
@@ -212,10 +212,10 @@ export const useAddVersionWithVariations = (
                     URL.revokeObjectURL(previewUrl); // Clean up blob URL
                     return updatedVariation;
 
-                } catch (error: any) {
+                } catch (error: unknown) {
                     console.error(`[AddVersion] Failed processing upload/update for variation ${variationRecord.variation_letter}:`, error);
                     setUploadQueue(prev => prev.map(f => 
-                        f.id === fileId ? { ...f, status: 'error', error: error.message || 'Processing failed', progress: 0 } : f
+                        f.id === fileId ? { ...f, status: 'error', error: error as string || 'Processing failed', progress: 0 } : f
                     ));
                     URL.revokeObjectURL(previewUrl); // Clean up blob URL even on error
                     throw error; // Re-throw to be caught by the concurrency controller
@@ -354,7 +354,7 @@ export const useAddVariationsToVersion = (
                     }
                     createdVariations.push(createdVar);
                 }
-            } catch (error: any) {
+            } catch (error: unknown) {
                  console.error("[AddVarUpload] Error during sequential variation record creation:", error);
                  // Unlike creating a new version, we don't necessarily need to clean up here,
                  // as the version already exists. Just re-throw.
@@ -417,10 +417,10 @@ export const useAddVariationsToVersion = (
                     URL.revokeObjectURL(previewUrl);
                     return updatedVariation;
 
-                } catch (error: any) {
+                } catch (error: unknown) {
                     console.error(`[AddVarUpload] Failed processing ${variationRecord.variation_letter}:`, error);
                     setUploadQueue(prev => prev.map(f => 
-                        f.id === fileId ? { ...f, status: 'error', error: error.message || 'Failed', progress: 0 } : f
+                        f.id === fileId ? { ...f, status: 'error', error: error as string || 'Failed', progress: 0 } : f
                     ));
                     URL.revokeObjectURL(previewUrl);
                     throw error;
@@ -429,7 +429,7 @@ export const useAddVariationsToVersion = (
 
             // --- 4. Concurrency Management Loop ---
             const allUploadPromises: Promise<Variation>[] = [];
-            let activePromises: Promise<any>[] = [];
+            let activePromises: Promise<unknown>[] = [];
             const fileIterator = files.entries();
             let currentFileJobIndex = 0;
             let nextFileJob = fileIterator.next();

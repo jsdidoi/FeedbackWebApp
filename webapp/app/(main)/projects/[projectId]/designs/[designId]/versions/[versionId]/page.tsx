@@ -980,9 +980,11 @@ export default function VersionDetailPage() {
                                                 {uploadQueue.map((item) => (
                                                     <div key={item.id} className="flex items-center space-x-2 p-1 border rounded-md bg-muted/50">
                                                         {item.previewUrl ? (
-                                                            <img 
+                                                            <Image 
                                                                 src={item.previewUrl} 
                                                                 alt="Preview" 
+                                                                width={100}
+                                                                height={100}
                                                                 className="h-10 w-10 object-contain border rounded-sm flex-shrink-0"
                                                             />
                                                         ) : (

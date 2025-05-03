@@ -72,7 +72,7 @@ export const DesignCard = ({ design, onClick, onSaveName, onDelete }: DesignCard
             const publicUrl = getPublicImageUrl(supabaseUrl, processedBucketName, processedPath);
             setImageUrl(publicUrl);
             setUrlError(null);
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error(`[DesignCard] Error generating processed URL for ${originalFilePath}:`, error);
             setUrlError("Failed to generate image URL.");
             setImageUrl(null);
@@ -137,7 +137,7 @@ export const DesignCard = ({ design, onClick, onSaveName, onDelete }: DesignCard
             <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
             <AlertDialogDescription>
               This action cannot be undone. This will permanently delete the design
-              "{design.name}" and all its associated versions, variations, comments, and files.
+              &quot;{design.name}&quot; and all its associated versions, variations, comments, and files.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -202,7 +202,7 @@ export const DesignCard = ({ design, onClick, onSaveName, onDelete }: DesignCard
               <DialogHeader>
                 <DialogTitle>Edit Design Name</DialogTitle>
                 <DialogDescription>
-                  Enter a new name for the design "{design.name}".
+                  Enter a new name for the design &quot;{design.name}&quot;.
                 </DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 py-4">

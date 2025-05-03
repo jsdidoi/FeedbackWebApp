@@ -21,6 +21,7 @@ import { useUpdateVariationStatus, useReplaceVariationFile, useDeleteVariation }
 import { VariationFeedbackStatus } from '@/types/models';
 import { getProcessedImagePath, getPublicImageUrl } from '@/lib/imageUtils';
 import { LARGE_WIDTH } from '@/lib/constants/imageConstants';
+import Image from 'next/image';
 
 interface VariationDetailModalProps {
     isOpen: boolean;
@@ -88,7 +89,7 @@ export const VariationDetailModal: React.FC<VariationDetailModalProps> = ({
                 const publicUrl = getPublicImageUrl(supabaseUrl, processedBucketName, processedPath);
                 setImageUrl(publicUrl);
                 setUrlError(null);
-             } catch (err: any) {
+             } catch (err: unknown) {
                  console.error(`Error generating processed URL for ${originalFilePath}:`, err);
                  setUrlError("Could not generate image URL.");
                  setImageUrl(null);
@@ -245,9 +246,11 @@ export const VariationDetailModal: React.FC<VariationDetailModalProps> = ({
                                 <span className="text-sm text-center">{urlError}</span>
                            </div>
                          ) : imageUrl ? (
-                             <img 
+                             <Image 
                                  src={imageUrl} 
                                  alt={`Variation ${variation.variation_letter}`} 
+                                 width={100}
+                                 height={100}
                                  className="max-w-full max-h-full object-contain rounded-lg"
                                  onError={() => {
                                      console.error(`Failed to load image: ${imageUrl}`);

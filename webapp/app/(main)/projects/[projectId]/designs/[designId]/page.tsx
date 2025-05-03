@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import { useAuth } from '@/providers/AuthProvider';
 import { useParams } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
@@ -43,12 +43,11 @@ import {
     TableRow,
 } from '@/components/ui/table';
 import {
-    Design,
-    Version,
     DesignStage,
     DesignWithVersions,
     NewVersionData,
     VersionRoundStatus,
+    Version,
 } from '@/types/models';
 
 // --- Zod Schema for New Version Form --- 
@@ -61,10 +60,22 @@ const versionSchema = versionZod.object({
   }),
 });
 
+// Define a minimal Supabase client type for type safety
+interface MinimalSupabaseClient {
+  from: (table: string) => unknown;
+}
+
+function hasFromMethod(obj: unknown): obj is MinimalSupabaseClient {
+  return typeof obj === 'object' && obj !== null && typeof (obj as MinimalSupabaseClient).from === 'function';
+}
+
 // Fetch function for versions of a design
-const fetchVersions = async (supabase: any, designId: string): Promise<Version[]> => {
+const fetchVersions = async (supabase: unknown, designId: string): Promise<Version[]> => {
     if (!designId) return [];
-    const { data, error } = await supabase
+    if (!hasFromMethod(supabase)) throw new Error('Invalid supabase client');
+    const typedSupabase = supabase as MinimalSupabaseClient;
+    // @ts-expect-error: Supabase error type is unknown, but we expect message property
+    const { data, error }: { data: Version[]; error: any } = await typedSupabase
         .from('versions') 
         .select(`
             id,
@@ -78,7 +89,7 @@ const fetchVersions = async (supabase: any, designId: string): Promise<Version[]
 
     if (error) {
         console.error('Full Supabase Versions Fetch Error:', error);
-        throw new Error(`Failed to fetch versions: ${error?.message || JSON.stringify(error)}`);
+        throw new Error(`Failed to fetch versions: ${error?.message ? error.message : String(error)}`);
     }
     return (data as Version[]) || [];
 };
@@ -86,7 +97,6 @@ const fetchVersions = async (supabase: any, designId: string): Promise<Version[]
 // --- Update Design Details Hook ---
 const useUpdateDesignDetails = (designId: string, projectId: string) => {
     const { supabase } = useAuth();
-    const queryClient = useQueryClient();
 
     return useMutation({
         mutationFn: async ({ name, description }: { name: string, description: string | null }) => { 
@@ -125,7 +135,6 @@ const useUpdateDesignDetails = (designId: string, projectId: string) => {
 // --- Add Version Hook ---
 const useAddVersion = (designId: string) => {
     const { supabase } = useAuth();
-    const queryClient = useQueryClient();
 
     return useMutation<
         Version,
@@ -175,7 +184,6 @@ const useAddVersion = (designId: string) => {
         },
         onSuccess: (data) => {
             toast.success(`Version V${data.version_number} (${data.stage}) added successfully!`);
-            queryClient.invalidateQueries({ queryKey: ['versions', designId] });
         },
         onError: (error) => {
             toast.error(error.message);
@@ -184,11 +192,13 @@ const useAddVersion = (designId: string) => {
 };
 
 // Fetch function for a single design and its versions
-const fetchDesignWithVersions = async (supabase: any, designId: string): Promise<DesignWithVersions | null> => {
-    if (!supabase || !designId) return null;
+const fetchDesignWithVersions = async (supabase: unknown, designId: string): Promise<DesignWithVersions | null> => {
+    if (!hasFromMethod(supabase) || !designId) return null;
+    const typedSupabase = supabase as MinimalSupabaseClient;
 
     // 1. Fetch the design by designId
-    const { data: design, error: designError } = await supabase
+    // @ts-expect-error: Supabase error type is unknown, but we expect message property
+    const { data: design, error: designError }: { data: DesignWithVersions; error: any } = await typedSupabase
         .from('designs')
         .select(`
             id,
@@ -205,7 +215,7 @@ const fetchDesignWithVersions = async (supabase: any, designId: string): Promise
 
     if (designError) {
         console.error('Error fetching design:', designError);
-        throw new Error(`Failed to fetch design: ${designError.message}`);
+        throw new Error(`Failed to fetch design: ${designError?.message ? designError.message : String(designError)}`);
     }
 
     // If design not found, return null
@@ -215,7 +225,8 @@ const fetchDesignWithVersions = async (supabase: any, designId: string): Promise
     }
 
     // 2. Fetch all versions where version.design_id === designId
-    const { data: versions, error: versionsError } = await supabase
+    // @ts-expect-error: Supabase error type is unknown, but we expect message property
+    const { data: versions, error: versionsError }: { data: Version[]; error: any } = await typedSupabase
         .from('versions')
         .select(`
             id,
@@ -230,9 +241,7 @@ const fetchDesignWithVersions = async (supabase: any, designId: string): Promise
 
     if (versionsError) {
         console.error('Error fetching versions for design:', versionsError);
-        // Don't necessarily throw; maybe return design with empty versions?
-        // For now, let's throw to indicate a problem.
-        throw new Error(`Failed to fetch versions: ${versionsError.message}`);
+        throw new Error(`Failed to fetch versions: ${versionsError?.message ? versionsError.message : String(versionsError)}`);
     }
 
     // 3. Combine results
@@ -247,7 +256,6 @@ const fetchDesignWithVersions = async (supabase: any, designId: string): Promise
 export default function DesignDetailPage() {
     const { supabase } = useAuth();
     const params = useParams();
-    const projectId = params.projectId as string;
     const designId = params.designId as string;
 
     // Edit State
@@ -279,7 +287,7 @@ export default function DesignDetailPage() {
     }, [designData, isEditing]);
 
     // Mutations
-    const updateDetailsMutation = useUpdateDesignDetails(designId, projectId);
+    const updateDetailsMutation = useUpdateDesignDetails(designId, '');
     const addVersionMutation = useAddVersion(designId);
 
     // --- Form Hooks ---
@@ -370,7 +378,7 @@ export default function DesignDetailPage() {
             <div className="container mx-auto p-4">
                 <h1 className="text-2xl font-bold text-red-600">Error Loading Design</h1>
                 <p>{(designError as Error)?.message || 'An unknown error occurred.'}</p>
-                <Link href={`/projects/${projectId}`} className="text-blue-600 hover:underline mt-4 inline-block">
+                <Link href={`/projects/${params.projectId}`} className="text-blue-600 hover:underline mt-4 inline-block">
                     Return to Project
                 </Link>
             </div>
@@ -382,7 +390,7 @@ export default function DesignDetailPage() {
             <div className="container mx-auto p-4">
                 <h1 className="text-2xl font-bold">Design Not Found</h1>
                 <p>The requested design could not be found.</p>
-                 <Link href={`/projects/${projectId}`} className="text-blue-600 hover:underline mt-4 inline-block">
+                 <Link href={`/projects/${params.projectId}`} className="text-blue-600 hover:underline mt-4 inline-block">
                     Return to Project
                 </Link>
             </div>
@@ -392,8 +400,8 @@ export default function DesignDetailPage() {
     // Define breadcrumb items
     const breadcrumbItems: BreadcrumbItem[] = [
         { label: 'Dashboard', href: '/dashboard' },
-        { label: projectId, href: `/projects/${projectId}` },
-        { label: designData.name } // Current design page
+        { label: params.projectId ? String(params.projectId) : '', href: `/projects/${params.projectId ? String(params.projectId) : ''}` },
+        { label: designData.name }
     ];
 
     return (
@@ -417,7 +425,7 @@ export default function DesignDetailPage() {
                                <CardTitle className="text-2xl mb-1">{designData.name}</CardTitle>
                            )}
                             <CardDescription>
-                                Part of project: <Link href={`/projects/${projectId}`} className="hover:underline">{projectId}</Link>
+                                Part of project: <Link href={`/projects/${params.projectId}`} className="hover:underline">{params.projectId}</Link>
                             </CardDescription>
                         </div>
                         
@@ -566,35 +574,21 @@ Select the stage for this new version and add optional notes. Status will defaul
                                     <TableRow key={version.id}>
                                         <TableCell className="font-medium">
                                             {/* Link to version detail page */}
-                                            <Link href={`/projects/${projectId}/designs/${designId}/versions/${version.id}`} className="hover:underline">
+                                            <Link href={`/projects/${params.projectId}/designs/${designId}/versions/${version.id}`}>
                                                 V{version.version_number}
                                             </Link>
                                         </TableCell>
-                                        <TableCell>
-                                            {/* Use Badge component with appropriate variant based on status */}
-                                            <Badge variant={
-                                                version.status === 'Round Complete' ? 'default' 
-                                                : version.status === 'Ready for Review' ? 'outline'
-                                                : 'secondary' // Default for WIP, Feedback Received
-                                            }>
-                                                {version.status}
-                                            </Badge>
-                                        </TableCell>
-                                        <TableCell className="text-right">
-                                            {new Date(version.created_at).toLocaleDateString()}
-                                        </TableCell>
+                                        <TableCell>{version.status}</TableCell>
+                                        <TableCell className="text-right">{new Date(version.created_at).toLocaleDateString()}</TableCell>
                                     </TableRow>
                                 ))}
                             </TableBody>
                         </Table>
                     ) : (
-                        <p className="italic text-muted-foreground text-center p-4">No versions found for this design yet.</p>
+                        <p className="italic text-muted-foreground">No versions found for this design.</p>
                     )}
                 </CardContent>
             </Card>
-
-            {/* TODO: Add Variations section? */} 
-
         </div>
     );
-} 
+}

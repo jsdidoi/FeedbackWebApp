@@ -61,9 +61,9 @@ export async function POST(request: NextRequest) {
             throw new Error('Missing originalPath in request body');
         }
         console.log(`[API /process-image] Processing request for: ${originalPath}`);
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('[API /process-image] Error parsing request body:', error);
-        return NextResponse.json({ error: 'Invalid request body.', details: error.message }, { status: 400 });
+        return NextResponse.json({ error: 'Invalid request body.', details: error instanceof Error ? error.message : String(error) }, { status: 400 });
     }
 
     const fileExt = originalPath.split('.').pop()?.toLowerCase();
@@ -141,9 +141,9 @@ export async function POST(request: NextRequest) {
              return NextResponse.json({ message: 'Image processed successfully.' }, { status: 200 });
         }
 
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error(`[API /process-image] CRITICAL ERROR processing ${originalPath}:`, error);
-        return NextResponse.json({ error: 'Image processing failed.', details: error.message }, { status: 500 });
+        return NextResponse.json({ error: 'Image processing failed.', details: error instanceof Error ? error.message : String(error) }, { status: 500 });
     }
 }
 

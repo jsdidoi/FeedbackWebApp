@@ -43,7 +43,7 @@ export const ModalImageViewer = ({ filePath }: ModalImageViewerProps) => {
 
         setImageUrl(publicUrl);
         setError(null);
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error("Error generating processed image URL:", err);
         setError("Could not generate image URL.");
         setImageUrl(null);

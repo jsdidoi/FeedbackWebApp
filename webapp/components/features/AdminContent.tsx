@@ -17,7 +17,7 @@ const AdminContent = () => {
     return (
       <div className="p-4 my-4 border rounded border-yellow-500 bg-yellow-50">
         <h2 className="font-bold text-lg mb-2">Admin Only Content</h2>
-        <p>This content is only visible to users with the 'admin' role.</p>
+        <p>This content is only visible to users with the &#39;admin&#39; role.</p>
         <p>Your role: {profile.role}</p>
       </div>
     );
