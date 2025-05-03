@@ -35,6 +35,7 @@ import { FileRejection } from 'react-dropzone';
 import Image from 'next/image';
 import { nanoid } from 'nanoid';
 import { Loader2, PlusCircle, Pencil, ImageIcon, Trash2 } from 'lucide-react';
+import { useReplaceVariationFile, useDeleteVariation } from '@/hooks/mutations';
 
 // --- Import types from central location --- 
 import {
@@ -280,141 +281,6 @@ const useUpdateVersion = (versionId: string) => {
     });
 };
 
-// --- Replace Variation File Hook --- Added
-export const useReplaceVariationFile = (variationId: string, versionId: string, designId: string, projectId: string) => {
-    const { supabase } = useAuth();
-    const queryClient = useQueryClient();
-
-    return useMutation({
-        mutationFn: async ({ newFile, oldFilePath }: { newFile: File, oldFilePath: string }) => {
-            if (!supabase) throw new Error("Supabase client not available");
-            if (!variationId || !newFile || !oldFilePath) throw new Error("Missing data for file replacement");
-
-            const bucketName = 'design-variations';
-            let newFilePath = oldFilePath; // Default to old path if something goes wrong
-
-            // 1. Delete the old file from storage
-            console.log(`[ReplaceFile] Deleting old file: ${oldFilePath}`);
-            const { error: deleteError } = await supabase.storage
-                .from(bucketName)
-                .remove([oldFilePath]);
-            
-            if (deleteError) {
-                console.error(`[ReplaceFile] Failed to delete old file ${oldFilePath}:`, deleteError);
-                // Don't necessarily fail yet, maybe the file didn't exist?
-                // But log a warning.
-                toast.warning(`Could not remove previous file, proceeding with upload.`);
-            }
-
-            // 2. Construct the new file path (keeping folder structure, updating filename if needed)
-            // Option A: Keep existing filename structure (just variation letter)
-            // const fileExt = newFile.name.split('.').pop();
-            // const variationLetter = oldFilePath.split('/').pop()?.split('.')[0]; // Extract letter
-            // const newFileName = `${variationLetter || 'file'}.${fileExt}`;
-            // newFilePath = `projects/${projectId}/designs/${designId}/versions/${versionId}/variations/${variationId}/${newFileName}`;
-
-            // Option B: Use the new file's name (simpler)
-            newFilePath = `projects/${projectId}/designs/${designId}/versions/${versionId}/variations/${variationId}/${newFile.name}`;
-
-            // 3. Upload the new file
-            console.log(`[ReplaceFile] Uploading new file to: ${newFilePath}`);
-            const { error: uploadError } = await supabase.storage
-                .from(bucketName)
-                .upload(newFilePath, newFile, { upsert: false }); // Don't upsert, should be replacing
-
-            if (uploadError) {
-                console.error(`[ReplaceFile] Upload failed for ${newFile.name}:`, uploadError);
-                throw new Error(`Storage upload failed: ${uploadError.message}`);
-            }
-
-            // 4. Update the variation record with the new file path
-            console.log(`[ReplaceFile] Updating variation ${variationId} with new path: ${newFilePath}`);
-            const { data: updatedVariation, error: updateError } = await supabase
-                .from('variations')
-                .update({ file_path: newFilePath, updated_at: new Date().toISOString() })
-                .eq('id', variationId)
-                .select('id, file_path') // Select needed data
-                .single();
-
-            if (updateError) {
-                console.error(`[ReplaceFile] Failed update variation ${variationId} file path:`, updateError);
-                // Maybe don't throw, but the link is broken
-                toast.error('File uploaded, but failed to update variation record.');
-                // Return something to indicate partial success?
-                return { id: variationId, file_path: null }; // Indicate failure to link
-            }
-            
-             return updatedVariation; // Return updated variation data
-        },
-        onSuccess: (data) => {
-             if (data?.file_path) {
-                 toast.success('Variation file replaced successfully!');
-             } 
-            // Invalidate queries to refetch version details (incl. variations)
-            queryClient.invalidateQueries({ queryKey: ['version', versionId, 'details'] });
-        },
-        onError: (error) => {
-            toast.error(`File replacement failed: ${error.message}`);
-        },
-    });
-};
-
-// --- Delete Variation Hook --- Renamed & Updated
-export const useDeleteVariation = (versionId: string, variationId: string) => {
-    const { supabase } = useAuth();
-    const queryClient = useQueryClient();
-
-    return useMutation({
-        // Takes filePath for attempting storage cleanup, but primary action is DB delete
-        mutationFn: async ({ filePath }: { filePath: string | null | undefined }) => { 
-            if (!supabase) throw new Error("Supabase client not available");
-            if (!variationId) throw new Error("Variation ID required for deletion");
-
-            const bucketName = 'design-variations';
-
-            // 1. Attempt to delete the file from storage (best effort)
-            if (filePath) {
-                console.log(`[DeleteVariation] Attempting to delete file: ${filePath}`);
-                const { error: deleteError } = await supabase.storage
-                    .from(bucketName)
-                    .remove([filePath]);
-                
-                if (deleteError) {
-                    // Log error but don't stop the DB deletion
-                    console.warn(`[DeleteVariation] Failed to delete file ${filePath} from storage, proceeding with DB deletion:`, deleteError);
-                    toast.warning(`Could not remove associated file from storage.`); 
-                }
-            } else {
-                console.log(`[DeleteVariation] No file path provided for variation ${variationId}, skipping storage deletion.`);
-            }
-
-            // 2. Delete the variation record from the database
-            console.log(`[DeleteVariation] Deleting variation record ${variationId} from database.`);
-            const { error: dbDeleteError } = await supabase
-                .from('variations')
-                .delete()
-                .eq('id', variationId);
-            
-            if (dbDeleteError) {
-                console.error(`[DeleteVariation] Failed to delete variation ${variationId} from database:`, dbDeleteError);
-                throw new Error('Failed to delete variation record.');
-            }
-
-            // Return something simple on success, maybe the ID deleted
-            return { deletedVariationId: variationId }; 
-        },
-        onSuccess: (data) => {
-            // Use variationId passed to hook, as data might just be {deletedVariationId: id}
-            toast.success(`Variation deleted successfully!`); 
-            // Invalidate queries to refetch version details (incl. variations)
-            queryClient.invalidateQueries({ queryKey: ['version', versionId, 'details'] });
-        },
-        onError: (error) => {
-            toast.error(`Variation deletion failed: ${error.message}`);
-        },
-    });
-};
-
 // --- Component: Variation Card ---
 const VariationCard: React.FC<{ variation: Variation, onClick: () => void }> = ({ variation, onClick }) => {
     const { supabase } = useAuth();
@@ -541,7 +407,7 @@ export default function VersionDetailPage() {
     // --- Mutations ---
     const addVariationMutation = useAddVariation(versionId, projectId, designId);
     const updateVersionMutation = useUpdateVersion(versionId);
-    const replaceVariationFileMutation = useReplaceVariationFile(versionId, versionId, designId, projectId);
+    const replaceVariationFileMutation = useReplaceVariationFile(versionId, designId, projectId);
 
     // --- Effect to fetch Signed URLs for Variations --- Added
     useEffect(() => {
