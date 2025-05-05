@@ -1,4 +1,4 @@
-// Trigger redeploy: trivial comment
+// Trigger redeploy: another trivial comment
 {
   "compilerOptions": {
     "target": "ES2017",
