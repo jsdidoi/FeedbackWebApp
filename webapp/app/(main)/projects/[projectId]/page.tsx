@@ -42,7 +42,8 @@ import {
     DesignStage,
     DesignGridItem,
     VariationFeedbackStatus,
-    ProjectStatus
+    ProjectStatus,
+    UploadingFileInfo // <-- Import the canonical type
 } from '@/types/models';
 import { ModalImageViewer } from '@/components/modal/ModalImageViewer';
 import {
@@ -92,16 +93,16 @@ import { Controller } from "react-hook-form"; // Import Controller
 import Image from 'next/image';
 
 // For Upload Queue
-interface UploadingFileInfo {
-    id: string;
-  file: File;
-  previewUrl: string;
-  status: 'pending' | 'uploading' | 'success' | 'error' | 'cancelled';
-  progress: number;
-  error?: string;
-  xhr?: XMLHttpRequest;
-  uploadStarted: boolean;
-}
+// interface UploadingFileInfo {
+//     id: string;
+//   file: File;
+//   previewUrl: string;
+//   status: 'pending' | 'uploading' | 'success' | 'error' | 'cancelled' | 'processing';
+//   progress: number;
+//   error?: string;
+//   xhr?: XMLHttpRequest;
+//   uploadStarted: boolean;
+// }
 
 // Type for inserting a new design (form data)
 type NewDesignForm = {
@@ -2445,6 +2446,8 @@ export default function ProjectsOverviewPage() {
                                                                 <p className="text-xs font-medium truncate" title={item.file.name}>{item.file.name}</p>
                                                                 {item.status === 'uploading' ? (
                                                                     <Progress value={item.progress} className="h-1.5" />
+                                                                ) : item.status === 'processing' ? (
+                                                                    <div className="flex items-center gap-1 text-blue-600"><Loader2 className="h-3 w-3 animate-spin" /> Processing...</div>
                                                                 ) : (
                                                                     <p className={cn(
                                                                         "text-xs truncate",

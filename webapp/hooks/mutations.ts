@@ -8,7 +8,8 @@ import {
     Version,
     Variation,
     Comment,
-    Attachment
+    Attachment,
+    UploadingFileInfo
 } from '@/types/models';
 import { 
     THUMBNAIL_WIDTH, 
@@ -58,18 +59,6 @@ export const useUpdateVersionDetails = (versionId: string, designId: string, pro
         },
     });
 };
-
-// Add UploadingFileInfo type if not already present
-interface UploadingFileInfo {
-    id: string;
-    file: File;
-    previewUrl: string;
-    status: 'pending' | 'uploading' | 'success' | 'error' | 'cancelled';
-    progress: number;
-    error?: string;
-    xhr?: XMLHttpRequest;
-    uploadStarted: boolean;
-}
 
 // Modify hook signature and implementation
 export const useAddVersionWithVariations = (

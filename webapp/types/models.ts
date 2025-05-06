@@ -151,7 +151,7 @@ export interface UploadingFileInfo {
   id: string;
   file: File;
   previewUrl: string;
-  status: 'pending' | 'uploading' | 'success' | 'error' | 'cancelled';
+  status: 'pending' | 'uploading' | 'success' | 'error' | 'cancelled' | 'processing';
   progress: number;
   error?: string;
   xhr?: XMLHttpRequest;

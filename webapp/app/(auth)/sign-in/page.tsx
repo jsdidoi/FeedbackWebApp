@@ -38,7 +38,7 @@ const SignInPage = () => {
         setError(error.message);
       } else {
         // Sign-in successful, redirect using Next.js router
-        router.push('/'); // Redirect to homepage
+        router.push('/dashboard'); // Redirect to dashboard
       }
     } catch (err) {
       setError("An unexpected error occurred.");
