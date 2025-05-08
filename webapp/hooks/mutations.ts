@@ -1,3 +1,4 @@
+// Trivial change to trigger Vercel redeploy
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/providers/AuthProvider';
 import { toast } from 'sonner';
@@ -195,6 +196,30 @@ export const useAddVersionWithVariations = (
                     if (updateError || !updatedVariation) {
                         throw new Error(`Failed to link file path for variation ${variationRecord.variation_letter}: ${updateError?.message}`);
                     }
+
+                    // --- ADDED: Trigger Image Processing API for this successfully uploaded variation ---
+                    console.log(`[AddVersion] Triggering image processing for: ${finalFilePath}`);
+                    try {
+                        const processResponse = await fetch('/api/process-image', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ originalPath: finalFilePath }),
+                        });
+                        if (!processResponse.ok) {
+                            const errorBody = await processResponse.json().catch(() => ({ error: 'Image processing API request failed with status ' + processResponse.status }));
+                            console.error(`[AddVersion] Image processing API call failed for ${finalFilePath}. Status: ${processResponse.status}`, errorBody);
+                            // Non-fatal: Log a warning toast, but the main upload was successful.
+                            toast.warning(`Variation ${variationRecord.variation_letter} uploaded, but processing failed: ${errorBody.error || 'Unknown error'}`);
+                        } else {
+                            console.log(`[AddVersion] Image processing API call successful for ${finalFilePath}`);
+                        }
+                    } catch (processError) {
+                        console.error(`[AddVersion] Error calling image processing API for ${finalFilePath}:`, processError);
+                        toast.warning(`Variation ${variationRecord.variation_letter} uploaded, but an error occurred while triggering processing: ${processError instanceof Error ? processError.message : 'Unknown error'}`);
+                    }
+                    // --- END: Trigger Image Processing ---
 
                     // d. Success for this file: Remove from queue and return result
                     setUploadQueue(prev => prev.filter(f => f.id !== fileId)); 
@@ -400,6 +425,30 @@ export const useAddVariationsToVersion = (
                     if (updateError || !updatedVariation) {
                         throw new Error(`Failed to link file path for ${variationRecord.variation_letter}: ${updateError?.message}`);
                     }
+
+                    // --- ADDED: Trigger Image Processing API for this successfully uploaded variation ---
+                    console.log(`[AddVarUpload] Triggering image processing for: ${finalFilePath}`);
+                    try {
+                        const processResponse = await fetch('/api/process-image', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ originalPath: finalFilePath }),
+                        });
+                        if (!processResponse.ok) {
+                            const errorBody = await processResponse.json().catch(() => ({ error: 'Image processing API request failed with status ' + processResponse.status }));
+                            console.error(`[AddVarUpload] Image processing API call failed for ${finalFilePath}. Status: ${processResponse.status}`, errorBody);
+                            // Non-fatal: Log a warning toast, but the main upload was successful.
+                            toast.warning(`Variation ${variationRecord.variation_letter} uploaded, but processing failed: ${errorBody.error || 'Unknown error'}`);
+                        } else {
+                            console.log(`[AddVarUpload] Image processing API call successful for ${finalFilePath}`);
+                        }
+                    } catch (processError) {
+                        console.error(`[AddVarUpload] Error calling image processing API for ${finalFilePath}:`, processError);
+                        toast.warning(`Variation ${variationRecord.variation_letter} uploaded, but an error occurred while triggering processing: ${processError instanceof Error ? processError.message : 'Unknown error'}`);
+                    }
+                    // --- END: Trigger Image Processing ---
 
                     // d. Success
                     setUploadQueue(prev => prev.filter(f => f.id !== fileId)); 
@@ -663,6 +712,29 @@ export const useReplaceVariationFile = (variationId: string, designId: string, p
             if (updateError) {
                 throw new Error(`Failed to update variation with new file path: ${updateError.message}`);
             }
+
+            // --- ADDED: Trigger Image Processing API for the replaced file ---
+            console.log(`[ReplaceVar] Triggering image processing for: ${filePath}`);
+            try {
+                const processResponse = await fetch('/api/process-image', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ originalPath: filePath }),
+                });
+                if (!processResponse.ok) {
+                    const errorBody = await processResponse.json().catch(() => ({ error: 'Image processing API request failed with status ' + processResponse.status }));
+                    console.error(`[ReplaceVar] Image processing API call failed for ${filePath}. Status: ${processResponse.status}`, errorBody);
+                    toast.warning(`File replaced, but processing failed: ${errorBody.error || 'Unknown error'}`);
+                } else {
+                    console.log(`[ReplaceVar] Image processing API call successful for ${filePath}`);
+                }
+            } catch (processError) {
+                console.error(`[ReplaceVar] Error calling image processing API for ${filePath}:`, processError);
+                toast.warning(`File replaced, but an error occurred while triggering processing: ${processError instanceof Error ? processError.message : 'Unknown error'}`);
+            }
+            // --- END: Trigger Image Processing ---
 
             return updatedVariation;
         },
@@ -948,6 +1020,31 @@ export const useAddComment = (designId: string | null, variationId: string | nul
                         // Removed logging
                         uploadedAttachments.push(newAttachment);
                         // Removed logging
+
+                        // --- ADDED: Trigger Image Processing API for this successfully uploaded attachment ---
+                        if (newAttachment.file_path) { // Ensure file_path exists
+                            console.log(`[AddCommentAttachment] Triggering image processing for: ${newAttachment.file_path}`);
+                            try {
+                                const processResponse = await fetch('/api/process-image', {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/json',
+                                    },
+                                    body: JSON.stringify({ originalPath: newAttachment.file_path }),
+                                });
+                                if (!processResponse.ok) {
+                                    const errorBody = await processResponse.json().catch(() => ({ error: 'Image processing API request failed with status ' + processResponse.status }));
+                                    console.error(`[AddCommentAttachment] Image processing API call failed for ${newAttachment.file_path}. Status: ${processResponse.status}`, errorBody);
+                                    toast.warning(`Attachment ${newAttachment.file_name} uploaded, but processing failed: ${errorBody.error || 'Unknown error'}`);
+                                } else {
+                                    console.log(`[AddCommentAttachment] Image processing API call successful for ${newAttachment.file_path}`);
+                                }
+                            } catch (processError) {
+                                console.error(`[AddCommentAttachment] Error calling image processing API for ${newAttachment.file_path}:`, processError);
+                                toast.warning(`Attachment ${newAttachment.file_name} uploaded, but an error occurred while triggering processing: ${processError instanceof Error ? processError.message : 'Unknown error'}`);
+                            }
+                        }
+                        // --- END: Trigger Image Processing ---
                     }
                      // Removed logging
                 }
