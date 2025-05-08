@@ -384,6 +384,9 @@ const useCreateDesignFromUpload = (
             let finalFilePath = '';
             const bucketName = 'design-variations';
 
+            // --- MOVED DEBUG LOG TO VERY START OF TRY BLOCK ---
+            // console.log(`[CreateDesignUpload DEBUG] >>> mutationFn TRY block entered for file: ${file.name}`);
+
             try {
                 // --- 1. Create Design --- 
                 const designName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
@@ -509,6 +512,39 @@ const useCreateDesignFromUpload = (
                 }
                  console.log(`[CreateDesignUpload] Successfully linked ${finalFilePath} to variation ${createdVariationId}`);
 
+                // --- 6. Trigger Image Processing API ---
+                // --- ADDED DEBUG LOG --- 
+                // console.log(`[CreateDesignUpload DEBUG] >>> Checkpoint BEFORE fetch block for ${finalFilePath}`);
+                // console.log(`[CreateDesignUpload DEBUG] >>> ABOUT TO CALL fetch('/api/process-image') for ${finalFilePath}`);
+                try {
+                    const processResponse = await fetch('/api/process-image', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ originalPath: finalFilePath }),
+                    });
+                    // --- ADDED DEBUG LOG --- 
+                    // console.log(`[CreateDesignUpload DEBUG] <<< fetch call completed. Status: ${processResponse.status}`);
+
+                    if (!processResponse.ok) {
+                        // Try to get more details from the response if available
+                        const errorBody = await processResponse.json().catch(() => ({ error: 'Image processing API request failed with status ' + processResponse.status }));
+                        console.error(`[CreateDesignUpload] Image processing API call failed for ${finalFilePath}. Status: ${processResponse.status}`, errorBody);
+                        toast.error(`Image uploaded, but processing failed: ${errorBody.error || 'Unknown error'}`);
+                    } else {
+                        console.log(`[CreateDesignUpload] Image processing API call successful for ${finalFilePath}`);
+                        // The toast message on success of the whole mutation already covers this.
+                        // toast.success(`Image "${file.name}" processed successfully!`);
+                    }
+                } catch (processError) {
+                    // --- ADDED DEBUG LOG --- 
+                    // console.error(`[CreateDesignUpload DEBUG] >>> fetch call threw an error for ${finalFilePath}:`, processError);
+                    console.error(`[CreateDesignUpload] Error calling image processing API for ${finalFilePath}:`, processError);
+                    toast.error(`Image uploaded, but an error occurred while triggering processing: ${processError instanceof Error ? processError.message : 'Unknown error'}`);
+                }
+                // --- End Trigger Image Processing ---
+
                 // Return the created design info AND the original fileId
                 return { ...newDesign, filePath: finalFilePath, originalFileId: fileId }; 
 
@@ -528,10 +564,12 @@ const useCreateDesignFromUpload = (
         onSuccess: (data, variables) => {
             toast.success(`Design "${data.name}" created and file "${variables.file.name}" uploaded successfully! Processing may take a moment.`); // Adjusted toast
             
-            // Remove successfully uploaded file from queue immediately
-            setUploadQueue(prevQueue => 
-                prevQueue.filter(f => f.id !== data.originalFileId)
-            );
+            console.log('[useCreateDesignFromUpload onSuccess] data.originalFileId:', data.originalFileId, 'File from variables:', variables.file.name);
+
+            // --- MODIFIED FOR TESTING --- 
+            console.log('[useCreateDesignFromUpload onSuccess] Attempting to clear queue COMPLETELY for testing.');
+            setUploadQueue([]); // Directly set to empty array for testing
+            // --- END MODIFIED FOR TESTING ---
 
             // --- REMOVE TEMPORARY DELAY ---
             // console.log(`[Upload Success] Waiting 5 seconds before refetching designs for project ${projectId}...`);
@@ -628,7 +666,7 @@ const useUpdateProjectDetails = (projectId: string) => {
 
             // Invalidate queries to refetch updated data
             // FIX: Use projectId from hook scope instead of component state
-            queryClient.invalidateQueries({ queryKey: ['project', projectId] }); // Specific project details
+            queryClient.invalidateQueries({ queryKey: ['project', projectId] }); // Specific project details - REVERTED TO projectId
             queryClient.invalidateQueries({ queryKey: ['projects', 'all'] }); // List for sidebar
         },
         onError: (error) => {
@@ -826,6 +864,7 @@ export default function ProjectsOverviewPage() {
     const [selectedProjectId, setSelectedProjectId] = useState<string | null>(initialProjectId || null);
     const [isEditingProject, setIsEditingProject] = useState(false);
     const [uploadQueue, setUploadQueue] = useState<UploadingFileInfo[]>([]);
+    const [dropzoneKey, setDropzoneKey] = useState<number>(0); // <-- New state for Dropzone key
 
     // NEW: State for the Design Detail Modal
     const [isDesignModalOpen, setIsDesignModalOpen] = useState(false);
@@ -1206,10 +1245,11 @@ export default function ProjectsOverviewPage() {
                  toast.error("Please select a project before uploading designs.");
                  return;
             }
-             console.log('Dropped files:', acceptedFiles, 'for project:', selectedProjectId);
+             // console.log('Dropped files:', acceptedFiles, 'for project:', selectedProjectId);
              
             acceptedFiles.forEach((file, index) => {
                 const fileId = `${Date.now()}-${index}`;
+                // console.log('[handleDrop] Generated fileId for queue:', fileId, 'for file:', file.name); 
                 
                 // Add type annotation for prevQueue
                 setUploadQueue((prevQueue: UploadingFileInfo[]) => [
@@ -1226,9 +1266,13 @@ export default function ProjectsOverviewPage() {
                 
                 createDesignFromUploadMutation.mutate({ file, fileId });
             });
+
+            // After processing all accepted files, update the key to reset the Dropzone
+            setDropzoneKey(prevKey => prevKey + 1); 
+
         },
-        // Add setUploadQueue to dependency array
-        [selectedProjectId, createDesignFromUploadMutation, setUploadQueue] 
+        // Add setUploadQueue to dependency array - already there, add setDropzoneKey
+        [selectedProjectId, createDesignFromUploadMutation, setUploadQueue, setDropzoneKey] 
     );
 
     // --- Implement Cancel Upload Handler ---
@@ -2122,7 +2166,7 @@ export default function ProjectsOverviewPage() {
                                 <CardDescription>Drag & drop files here to create new designs in this project.</CardDescription>
                 </CardHeader>
                 <CardContent>
-                                <Dropzone onFilesAccepted={handleDrop} /> 
+                                <Dropzone key={dropzoneKey} onFilesAccepted={handleDrop} /> 
                   {/* Render Upload Queue Items */}
                   <div className="mt-4 space-y-2">
                                 {uploadQueue.map(item => (

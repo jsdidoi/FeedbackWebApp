@@ -53,6 +53,9 @@ export const DesignCard = ({ design, onClick, onSaveName, onDelete }: DesignCard
   const [isEditNameDialogOpen, setIsEditNameDialogOpen] = useState(false);
 
   useEffect(() => {
+    // --- ADDED LOG TO CHECK HOOK EXECUTION AND DATA ---
+    // console.log(`[DesignCard Hook Start ${design.name}] Running useEffect. Design data:`, JSON.stringify(design, null, 2));
+    
     setImageUrl(null);
     setUrlError(null);
     setIsLoadingUrl(true);
@@ -65,11 +68,41 @@ export const DesignCard = ({ design, onClick, onSaveName, onDelete }: DesignCard
     }
 
     const originalFilePath = design.latest_thumbnail_path;
+    // --- ADD DEBUG LOGGING --- 
+    // console.log(`[DesignCard Debug ${design.name}] Received originalFilePath:`, originalFilePath);
 
     if (originalFilePath) {
         try {
-            const processedPath = getProcessedImagePath(originalFilePath, THUMBNAIL_WIDTH);
-            const publicUrl = getPublicImageUrl(supabaseUrl, processedBucketName, processedPath);
+            let finalProcessedPath: string;
+            const isOriginalGif = originalFilePath.toLowerCase().endsWith('.gif');
+            // --- ADD DEBUG LOGGING --- 
+            // console.log(`[DesignCard Debug ${design.name}] isOriginalGif:`, isOriginalGif);
+
+            if (isOriginalGif) {
+                // --- CORRECTED: For GIFs, the processed path IS the original path --- 
+                finalProcessedPath = originalFilePath;
+                // --- REMOVED Incorrect path calculation logic --- 
+                // const parts = originalFilePath.split('/');
+                // const fileNameWithExt = parts.pop() || '';
+                // const fileNameWithoutExt = fileNameWithExt.split('.').slice(0, -1).join('.');
+                // const baseFileName = fileNameWithoutExt.replace(/_\d+$/, ''); // Incorrectly removed _01
+                // const originalSubPath = parts.join('/');
+                // const gifFileName = `${baseFileName}.gif`;
+                // finalProcessedPath = originalSubPath
+                //     ? `${originalSubPath}/${gifFileName}`
+                //     : gifFileName;
+                // --- Removed debug log ---
+            } else {
+                // For other types, use the existing helper to get the _200.webp path
+                finalProcessedPath = getProcessedImagePath(originalFilePath, THUMBNAIL_WIDTH);
+                // --- ADD DEBUG LOGGING --- 
+                // console.log(`[DesignCard Debug ${design.name}] Generated WebP path:`, finalProcessedPath);
+            }
+
+            // Use the determined path to generate the final public URL
+            const publicUrl = getPublicImageUrl(supabaseUrl, processedBucketName, finalProcessedPath);
+             // --- ADD DEBUG LOGGING --- 
+             // console.log(`[DesignCard Debug ${design.name}] Final publicUrl:`, publicUrl);
             setImageUrl(publicUrl);
             setUrlError(null);
         } catch (error: unknown) {
@@ -167,9 +200,10 @@ export const DesignCard = ({ design, onClick, onSaveName, onDelete }: DesignCard
             sizes="(max-width: 640px) 100vw, (max-width: 768px) 50vw, (max-width: 1024px) 33vw, 25vw"
             style={{ objectFit: 'cover' }}
             className="absolute w-full h-full transition-transform duration-300 group-hover:scale-105"
+            unoptimized={design.latest_thumbnail_path?.toLowerCase().endsWith('.gif')}
             onError={(e) => {
-              console.error(`[DesignCard] Failed to load image: ${imageUrl}`, e);
-              setUrlError("Failed to load image.");
+              console.error(`[DesignCard] Failed to load image via Next/Image: ${imageUrl}`, e);
+              setUrlError("Failed to load image."); 
               setImageUrl(null);
             }}
           />

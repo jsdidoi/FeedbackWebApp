@@ -263,9 +263,32 @@ export const CommentCard = ({
                       <div className="mt-2 space-y-1">
                           {comment.attachments.map((attachment) => {
                               const isImage = attachment.file_type?.startsWith('image/');
-                              // Get URLs for both thumbnail and large versions
-                              const thumbnailUrl = isImage ? getProcessedAttachmentUrl(attachment.file_path, THUMBNAIL_WIDTH) : getProcessedAttachmentUrl(attachment.file_path, LARGE_WIDTH); // Fallback for non-images?
-                              const largeImageUrl = isImage ? getProcessedAttachmentUrl(attachment.file_path, LARGE_WIDTH) : null;
+                              // --- ADDED: Check for GIF --- 
+                              const isGif = attachment.file_path?.toLowerCase().endsWith('.gif');
+
+                              // --- MODIFIED: Generate URLs based on type --- 
+                              let thumbnailUrl: string | null = null;
+                              let largeImageUrl: string | null = null;
+
+                              if (isImage && supabaseUrl && processedBucketName && attachment.file_path) {
+                                  if (isGif) {
+                                      // For GIFs, point directly to the copied file in the processed bucket
+                                      thumbnailUrl = getPublicImageUrl(supabaseUrl, processedBucketName, attachment.file_path);
+                                      largeImageUrl = thumbnailUrl; // Large view is the same for GIF
+                                  } else {
+                                      // For other images, generate processed webp paths
+                                      thumbnailUrl = getProcessedAttachmentUrl(attachment.file_path, THUMBNAIL_WIDTH);
+                                      largeImageUrl = getProcessedAttachmentUrl(attachment.file_path, LARGE_WIDTH);
+                                  }
+                              } else if (!isImage && supabaseUrl && processedBucketName && attachment.file_path) {
+                                  // Handle non-image files (provide direct download link from original bucket?)
+                                  // Let's assume getAttachmentUrl (using original bucket) is suitable here, needs defining/uncommenting
+                                  // thumbnailUrl = getAttachmentUrl(attachment.file_path); // Needs original bucket
+                                  // For now, let's try getting public URL from processed bucket - might fail if not copied
+                                  thumbnailUrl = getPublicImageUrl(supabaseUrl, 'comment-attachments', attachment.file_path); // Point to original bucket
+                              }
+
+                              // --- END MODIFIED --- 
 
                               return isImage && thumbnailUrl ? (
                                   <Dialog key={attachment.id}> {/* Use Dialog for lightbox effect */}

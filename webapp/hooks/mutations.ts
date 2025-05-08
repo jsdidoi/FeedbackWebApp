@@ -543,11 +543,15 @@ export const useAddVariationsToVersion = (
 
 // Helper function (similar to edge function, but simplified for client-side use)
 // Gets the BASE name without extension or _WIDTH suffix
-const getBaseFileName = (filePath: string | null | undefined): string => {
+const getBaseFileNameForDeletion = (filePath: string | null | undefined): string => {
     if (!filePath) return '';
     const parts = filePath.split('/');
     const fileNameWithAnyExt = parts.pop() || '';
     const fileNameWithoutAnyExt = fileNameWithAnyExt.split('.').slice(0, -1).join('.');
+    // Handle potential suffixes added during upload (like timestamp)
+    // This regex assumes a pattern like `-<digits>-` before the actual name
+    // Adjust if your unique naming convention is different
+    // Simpler approach: Just remove _WIDTH suffix if present
     return fileNameWithoutAnyExt.replace(/_\d+$/, ''); 
 };
 
@@ -602,7 +606,7 @@ export const useDeleteVariation = (variationId: string, designId: string) => {
             // 3. If file_path existed, attempt to delete storage files AFTER successful DB delete
             if (originalFilePath) {
                 try {
-                    const baseFileName = getBaseFileName(originalFilePath);
+                    const baseFileName = getBaseFileNameForDeletion(originalFilePath);
                     const originalPathParts = originalFilePath.split('/');
                     originalPathParts.pop(); // Remove original filename
                     const basePath = originalPathParts.join('/');
@@ -688,11 +692,69 @@ export const useReplaceVariationFile = (variationId: string, designId: string, p
                 throw new Error(`Failed to get variation data: ${getError?.message}`);
             }
 
+            const oldFilePath = variation.file_path; // Store the old file path
+
+            // --- ADDED: Attempt to delete OLD files before uploading new one ---
+            if (oldFilePath) {
+                console.log(`[ReplaceVar] Starting cleanup for old file: ${oldFilePath}`);
+                const DESIGN_VARIATIONS_BUCKET = 'design-variations'; // Ensure defined
+                const PROCESSED_IMAGES_BUCKET = 'processed-images'; // Ensure defined
+                const oldProcessedPaths: string[] = [];
+
+                const isOldGif = oldFilePath.toLowerCase().endsWith('.gif');
+                const oldParts = oldFilePath.split('/');
+                const oldFileNameWithExt = oldParts.pop() || '';
+                const oldBasePath = oldParts.join('/');
+                const oldFileNameWithoutExt = oldFileNameWithExt.includes('.')
+                    ? oldFileNameWithExt.substring(0, oldFileNameWithExt.lastIndexOf('.'))
+                    : oldFileNameWithExt;
+
+                if (isOldGif) {
+                    oldProcessedPaths.push(oldFilePath);
+                } else {
+                    [THUMBNAIL_WIDTH, MEDIUM_WIDTH, LARGE_WIDTH].forEach(width => {
+                        oldProcessedPaths.push(`${oldBasePath}/${oldFileNameWithoutExt}_${width}.webp`);
+                    });
+                }
+
+                try {
+                    // Delete old original
+                    console.log(`[ReplaceVar] Attempting to delete old original from ${DESIGN_VARIATIONS_BUCKET}: [${oldFilePath}]`);
+                    const deleteOldOriginalResult = await supabase.storage
+                        .from(DESIGN_VARIATIONS_BUCKET)
+                        .remove([oldFilePath]);
+                    console.log("[ReplaceVar] Raw result from deleting old original:", deleteOldOriginalResult);
+                    if (deleteOldOriginalResult.error) {
+                        console.warn(`[ReplaceVar] Failed to delete old original file ${oldFilePath} (continuing replacement):`, deleteOldOriginalResult.error);
+                        // Don't toast error here, replacement is primary goal
+                    } else {
+                        console.log(`[ReplaceVar] Successfully reported deletion of old original file: ${oldFilePath}`);
+                    }
+
+                    // Delete old processed
+                    if (oldProcessedPaths.length > 0) {
+                        console.log(`[ReplaceVar] Attempting to delete old processed from ${PROCESSED_IMAGES_BUCKET}:`, oldProcessedPaths);
+                        const deleteOldProcessedResult = await supabase.storage
+                            .from(PROCESSED_IMAGES_BUCKET)
+                            .remove(oldProcessedPaths);
+                        console.log("[ReplaceVar] Raw result from deleting old processed:", deleteOldProcessedResult);
+                        if (deleteOldProcessedResult.error) {
+                            console.warn(`[ReplaceVar] Failed to delete old processed files for ${oldFilePath} (continuing replacement):`, deleteOldProcessedResult.error);
+                        } else {
+                            console.log(`[ReplaceVar] Successfully reported deletion of old processed files for: ${oldFilePath}`);
+                        }
+                    }
+                } catch (cleanupError) {
+                    console.warn(`[ReplaceVar] Exception during old file cleanup for ${oldFilePath} (continuing replacement):`, cleanupError);
+                }
+            }
+            // --- END: Attempt to delete OLD files ---
+
             // Upload new file
-            const filePath = `projects/${projectId}/designs/${designId}/versions/${variation.versions.id}/variations/${variationId}/${file.name}`;
+            const newFilePath = `projects/${projectId}/designs/${designId}/versions/${variation.versions.id}/variations/${variationId}/${file.name}`;
             const { error: uploadError } = await supabase.storage
                 .from('design-variations')
-                .upload(filePath, file, { upsert: true });
+                .upload(newFilePath, file, { upsert: true });
 
             if (uploadError) {
                 throw new Error(`Failed to upload new file: ${uploadError.message}`);
@@ -702,7 +764,7 @@ export const useReplaceVariationFile = (variationId: string, designId: string, p
             const { data: updatedVariation, error: updateError } = await supabase
                 .from('variations')
                 .update({ 
-                    file_path: filePath,
+                    file_path: newFilePath,
                     updated_at: new Date().toISOString()
                 })
                 .eq('id', variationId)
@@ -714,24 +776,24 @@ export const useReplaceVariationFile = (variationId: string, designId: string, p
             }
 
             // --- ADDED: Trigger Image Processing API for the replaced file ---
-            console.log(`[ReplaceVar] Triggering image processing for: ${filePath}`);
+            console.log(`[ReplaceVar] Triggering image processing for: ${newFilePath}`);
             try {
                 const processResponse = await fetch('/api/process-image', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ originalPath: filePath }),
+                    body: JSON.stringify({ originalPath: newFilePath }),
                 });
                 if (!processResponse.ok) {
                     const errorBody = await processResponse.json().catch(() => ({ error: 'Image processing API request failed with status ' + processResponse.status }));
-                    console.error(`[ReplaceVar] Image processing API call failed for ${filePath}. Status: ${processResponse.status}`, errorBody);
+                    console.error(`[ReplaceVar] Image processing API call failed for ${newFilePath}. Status: ${processResponse.status}`, errorBody);
                     toast.warning(`File replaced, but processing failed: ${errorBody.error || 'Unknown error'}`);
                 } else {
-                    console.log(`[ReplaceVar] Image processing API call successful for ${filePath}`);
+                    console.log(`[ReplaceVar] Image processing API call successful for ${newFilePath}`);
                 }
             } catch (processError) {
-                console.error(`[ReplaceVar] Error calling image processing API for ${filePath}:`, processError);
+                console.error(`[ReplaceVar] Error calling image processing API for ${newFilePath}:`, processError);
                 toast.warning(`File replaced, but an error occurred while triggering processing: ${processError instanceof Error ? processError.message : 'Unknown error'}`);
             }
             // --- END: Trigger Image Processing ---
@@ -740,7 +802,14 @@ export const useReplaceVariationFile = (variationId: string, designId: string, p
         },
         onSuccess: () => {
             toast.success('Variation file replaced successfully!');
+            // Invalidate the detailed view query
             queryClient.invalidateQueries({ queryKey: ['designDetails', designId] });
+            // --- ADDED: Invalidate the project's design list query --- 
+            if (projectId) { // Ensure projectId is available
+                queryClient.invalidateQueries({ queryKey: ['designs', projectId] });
+                console.log(`[ReplaceVar] Invalidated ['designs', '${projectId}'] query.`);
+            }
+            // --- END ADDED --- 
         },
         onError: (error) => {
             toast.error(error.message);
@@ -827,23 +896,123 @@ export const useUpdateDesignDetails = (projectId: string) => {
 export const useDeleteDesign = (projectId: string) => {
     const { supabase } = useAuth();
     const queryClient = useQueryClient();
+    const DESIGN_VARIATIONS_BUCKET = 'design-variations'; // Define buckets
+    const PROCESSED_IMAGES_BUCKET = 'processed-images';
 
     return useMutation({
         mutationFn: async (designId: string) => {
             if (!supabase) throw new Error("Supabase client not available");
             if (!designId) throw new Error("Design ID is required");
 
-            // Delete design record (cascading deletes handled by DB)
-            const { error } = await supabase
+            let variationFilePathsToDelete: string[] = [];
+
+            // --- 1. Fetch variation file paths BEFORE deleting design ---
+            try {
+                console.log(`[DeleteDesign] Fetching variation file paths for design ID: ${designId}`);
+                // Query needs to join variations -> versions -> designs (implicit via version's design_id)
+                const { data: variations, error: fetchVariationsError } = await supabase
+                    .from('versions') // Start from versions
+                    .select(`
+                        variations ( file_path )
+                    `)
+                    .eq('design_id', designId);
+
+                if (fetchVariationsError) {
+                    console.error("[DeleteDesign] Error fetching versions/variations:", fetchVariationsError);
+                    toast.warning("Could not fetch variation details before deleting design.");
+                } else if (variations && variations.length > 0) {
+                    // Flatten the result and filter out null/empty file_paths
+                    variationFilePathsToDelete = variations
+                        .flatMap(v => v.variations)
+                        .map(variation => variation?.file_path)
+                        .filter((path): path is string => !!path);
+                    console.log(`[DeleteDesign] Found variation paths to delete:`, variationFilePathsToDelete);
+                }
+            } catch (error) {
+                console.error("[DeleteDesign] Exception fetching variation paths:", error);
+                toast.warning("An exception occurred while fetching variation file paths.");
+            }
+
+            // --- 2. Delete design record (assuming DB cascades handle related records) ---
+            console.log(`[DeleteDesign] Attempting to delete design record ID: ${designId}`);
+            const { error: deleteDesignError } = await supabase
                 .from('designs')
                 .delete()
                 .eq('id', designId);
 
-            if (error) {
-                throw new Error(`Failed to delete design: ${error.message}`);
+            if (deleteDesignError) {
+                console.error("[DeleteDesign] Error deleting design record:", deleteDesignError);
+                throw new Error(`Failed to delete design: ${deleteDesignError.message}`);
+            }
+            console.log(`[DeleteDesign] Successfully deleted design record ID: ${designId}`);
+
+            // --- 3. Attempt to delete associated storage files AFTER successful DB delete ---
+            if (variationFilePathsToDelete.length > 0) {
+                console.log(`[DeleteDesign] Starting storage cleanup for ${variationFilePathsToDelete.length} original variation files.`);
+
+                for (const originalVariationPath of variationFilePathsToDelete) {
+                    console.log(`[DeleteDesign] Processing cleanup for original variation path: ${originalVariationPath}`);
+                    const processedPathsForThisVariation: string[] = [];
+
+                    // Construct paths for processed files
+                    const isGif = originalVariationPath.toLowerCase().endsWith('.gif');
+                    const parts = originalVariationPath.split('/'); 
+                    const fileNameWithExt = parts.pop() || ''; 
+                    const basePath = parts.join('/'); // Should be like projects/PID/designs/DID/versions/VID/variations/VARID
+                    const fileNameWithoutExt = fileNameWithExt.includes('.') 
+                        ? fileNameWithExt.substring(0, fileNameWithExt.lastIndexOf('.')) 
+                        : fileNameWithExt; 
+
+                    if (isGif) {
+                        // For GIFs, the processed path is the same as original
+                        processedPathsForThisVariation.push(originalVariationPath); 
+                    } else {
+                        [THUMBNAIL_WIDTH, MEDIUM_WIDTH, LARGE_WIDTH].forEach(width => {
+                            const processedPath = `${basePath}/${fileNameWithoutExt}_${width}.webp`;
+                            processedPathsForThisVariation.push(processedPath);
+                        });
+                    }
+
+                    // Perform deletions individually
+                    try {
+                        // Delete Original from design-variations
+                        console.log(`[DeleteDesign] Attempting to delete original from ${DESIGN_VARIATIONS_BUCKET}: [${originalVariationPath}]`);
+                        const deleteOriginalResult = await supabase.storage
+                            .from(DESIGN_VARIATIONS_BUCKET)
+                            .remove([originalVariationPath]);
+                        console.log("[DeleteDesign] Raw result from deleting original variation:", deleteOriginalResult);
+                        if (deleteOriginalResult.error) {
+                            console.error(`[DeleteDesign] Failed to delete original variation file ${originalVariationPath}:`, deleteOriginalResult.error);
+                            // Non-fatal warning
+                        } else {
+                            console.log(`[DeleteDesign] Successfully reported deletion of original variation file: ${originalVariationPath}`);
+                        }
+
+                        // Delete Processed from processed-images
+                        if (processedPathsForThisVariation.length > 0) {
+                            console.log(`[DeleteDesign] Attempting to delete processed from ${PROCESSED_IMAGES_BUCKET}:`, processedPathsForThisVariation);
+                            const deleteProcessedResult = await supabase.storage
+                                .from(PROCESSED_IMAGES_BUCKET)
+                                .remove(processedPathsForThisVariation);
+
+                            console.log("[DeleteDesign] Raw result from deleting processed variation:", deleteProcessedResult);
+                            if (deleteProcessedResult.error) {
+                                 console.error(`[DeleteDesign] Failed to delete processed variation files for ${originalVariationPath}:`, deleteProcessedResult.error);
+                                 // Non-fatal warning
+                            } else {
+                                console.log(`[DeleteDesign] Successfully reported deletion of processed attachment files for: ${originalVariationPath}`);
+                            }
+                        }
+                    } catch (storageError) {
+                        console.error(`[DeleteDesign] Exception during storage file deletion for ${originalVariationPath}:`, storageError);
+                        toast.warning("Design deleted, but encountered an error during storage cleanup."); // Inform user
+                    }
+                }
+            } else {
+                console.log(`[DeleteDesign] No variation file paths found for design ${designId}, skipping storage deletion.`);
             }
 
-            return designId;
+            return designId; // Return designId on success
         },
         onSuccess: (designId) => {
             toast.success('Design deleted successfully!');
@@ -860,22 +1029,164 @@ export const useDeleteDesign = (projectId: string) => {
 export const useDeleteProject = () => {
     const { supabase } = useAuth();
     const queryClient = useQueryClient();
+    const COMMENT_ATTACHMENTS_BUCKET = 'comment-attachments';
+    const DESIGN_VARIATIONS_BUCKET = 'design-variations';
+    const PROCESSED_IMAGES_BUCKET = 'processed-images';
 
     return useMutation({
         mutationFn: async (projectId: string) => {
             if (!supabase) throw new Error("Supabase client not available");
             if (!projectId) throw new Error("Project ID is required");
 
-            // Delete project record (cascading deletes handled by DB)
-            const { error } = await supabase
+            let allVariationPaths: string[] = [];
+            let allCommentAttachmentPaths: string[] = [];
+
+            // --- 1. Fetch ALL relevant file paths for the entire project BEFORE deleting --- 
+            try {
+                console.log(`[DeleteProject] Fetching all designs and related file paths for project ID: ${projectId}`);
+                // We need designs -> versions -> variations (file_path) -> comments -> attachments (file_path)
+                const { data: designs, error: fetchError } = await supabase
+                    .from('designs')
+                    .select(`
+                        id,
+                        versions (
+                            id,
+                            variations (
+                                id,
+                                file_path,
+                                comments (
+                                    id,
+                                    attachments ( file_path )
+                                )
+                            )
+                        )
+                    `)
+                    .eq('project_id', projectId);
+
+                if (fetchError) {
+                    console.error("[DeleteProject] Error fetching design/version/variation/comment/attachment data:", fetchError);
+                    toast.warning("Could not fetch all file paths before deleting project. Some storage files might be orphaned.");
+                    // Proceed with DB deletion, but skip storage cleanup
+                } else if (designs && designs.length > 0) {
+                    designs.forEach(design => {
+                        design.versions.forEach(version => {
+                            version.variations.forEach(variation => {
+                                if (variation.file_path) {
+                                    allVariationPaths.push(variation.file_path);
+                                }
+                                variation.comments.forEach((comment: any) => {
+                                    comment.attachments.forEach((attachment: any) => {
+                                        if (attachment.file_path) {
+                                            allCommentAttachmentPaths.push(attachment.file_path);
+                                        }
+                                    });
+                                });
+                            });
+                        });
+                    });
+                    console.log(`[DeleteProject] Found ${allVariationPaths.length} variation paths and ${allCommentAttachmentPaths.length} comment attachment paths to delete.`);
+                } else {
+                    console.log(`[DeleteProject] No designs found for project ${projectId}.`);
+                }
+
+            } catch (error) {
+                console.error("[DeleteProject] Exception fetching file paths:", error);
+                toast.warning("An exception occurred while fetching file paths. Some storage files might be orphaned.");
+                // Proceed with DB deletion, but skip storage cleanup
+            }
+
+            // --- 2. Delete project record (assuming DB cascades handle related records) --- 
+            console.log(`[DeleteProject] Attempting to delete project record ID: ${projectId}`);
+            const { error: deleteProjectDbError } = await supabase
                 .from('projects')
                 .delete()
                 .eq('id', projectId);
 
-            if (error) {
-                throw new Error(`Failed to delete project: ${error.message}`);
+            if (deleteProjectDbError) {
+                console.error("[DeleteProject] Error deleting project record:", deleteProjectDbError);
+                throw new Error(`Failed to delete project: ${deleteProjectDbError.message}`);
+            }
+            console.log(`[DeleteProject] Successfully deleted project record ID: ${projectId}`);
+
+            // --- 3. Process Deletion for Comment Attachments --- 
+            if (allCommentAttachmentPaths.length > 0) {
+                console.log(`[DeleteProject] Starting storage cleanup for ${allCommentAttachmentPaths.length} comment attachments.`);
+                for (const originalPath of allCommentAttachmentPaths) {
+                    const processedPaths: string[] = [];
+                    const isGif = originalPath.toLowerCase().endsWith('.gif');
+                    const parts = originalPath.split('/');
+                    const fileNameWithExt = parts.pop() || '';
+                    const basePath = parts.join('/');
+                    const fileNameWithoutExt = fileNameWithExt.includes('.') ? fileNameWithExt.substring(0, fileNameWithExt.lastIndexOf('.')) : fileNameWithExt;
+                    
+                    if (isGif) {
+                        processedPaths.push(originalPath);
+                    } else {
+                        [THUMBNAIL_WIDTH, MEDIUM_WIDTH, LARGE_WIDTH].forEach(width => {
+                            processedPaths.push(`${basePath}/${fileNameWithoutExt}_${width}.webp`);
+                        });
+                    }
+
+                    try {
+                        console.log(`[DeleteProject] Deleting original comment attachment: [${originalPath}]`);
+                        const { error: delOrigErr } = await supabase.storage.from(COMMENT_ATTACHMENTS_BUCKET).remove([originalPath]);
+                        if (delOrigErr) console.warn(`[DeleteProject] Failed to delete original comment file ${originalPath}:`, delOrigErr);
+                        else console.log(`[DeleteProject] Reported deletion of original comment file: ${originalPath}`);
+
+                        if (processedPaths.length > 0) {
+                             console.log(`[DeleteProject] Deleting processed comment attachment(s):`, processedPaths);
+                            const { error: delProcErr } = await supabase.storage.from(PROCESSED_IMAGES_BUCKET).remove(processedPaths);
+                            if (delProcErr) console.warn(`[DeleteProject] Failed to delete processed comment files for ${originalPath}:`, delProcErr);
+                            else console.log(`[DeleteProject] Reported deletion of processed comment files for: ${originalPath}`);
+                        }
+                    } catch (e) {
+                        console.warn(`[DeleteProject] Exception cleaning up comment attachment ${originalPath}:`, e);
+                    }
+                }
+            } else {
+                console.log(`[DeleteProject] No comment attachments found for project ${projectId}.`);
+            }
+            
+            // --- 4. Process Deletion for Design Variations --- 
+            if (allVariationPaths.length > 0) {
+                console.log(`[DeleteProject] Starting storage cleanup for ${allVariationPaths.length} design variations.`);
+                 for (const originalPath of allVariationPaths) {
+                    const processedPaths: string[] = [];
+                    const isGif = originalPath.toLowerCase().endsWith('.gif');
+                    const parts = originalPath.split('/');
+                    const fileNameWithExt = parts.pop() || '';
+                    const basePath = parts.join('/');
+                    const fileNameWithoutExt = fileNameWithExt.includes('.') ? fileNameWithExt.substring(0, fileNameWithExt.lastIndexOf('.')) : fileNameWithExt;
+                    
+                    if (isGif) {
+                        processedPaths.push(originalPath);
+                    } else {
+                        [THUMBNAIL_WIDTH, MEDIUM_WIDTH, LARGE_WIDTH].forEach(width => {
+                            processedPaths.push(`${basePath}/${fileNameWithoutExt}_${width}.webp`);
+                        });
+                    }
+
+                    try {
+                        console.log(`[DeleteProject] Deleting original design variation: [${originalPath}]`);
+                        const { error: delOrigErr } = await supabase.storage.from(DESIGN_VARIATIONS_BUCKET).remove([originalPath]);
+                        if (delOrigErr) console.warn(`[DeleteProject] Failed to delete original variation file ${originalPath}:`, delOrigErr);
+                        else console.log(`[DeleteProject] Reported deletion of original variation file: ${originalPath}`);
+
+                        if (processedPaths.length > 0) {
+                             console.log(`[DeleteProject] Deleting processed design variation(s):`, processedPaths);
+                            const { error: delProcErr } = await supabase.storage.from(PROCESSED_IMAGES_BUCKET).remove(processedPaths);
+                            if (delProcErr) console.warn(`[DeleteProject] Failed to delete processed variation files for ${originalPath}:`, delProcErr);
+                            else console.log(`[DeleteProject] Reported deletion of processed variation files for: ${originalPath}`);
+                        }
+                    } catch (e) {
+                        console.warn(`[DeleteProject] Exception cleaning up design variation ${originalPath}:`, e);
+                    }
+                }
+            } else {
+                 console.log(`[DeleteProject] No design variations found for project ${projectId}.`);
             }
 
+            console.log(`[DeleteProject] Storage cleanup finished for project ${projectId}.`);
             return projectId;
         },
         onSuccess: (projectId) => {
@@ -889,6 +1200,7 @@ export const useDeleteProject = () => {
     });
 };
 
+// --- Project Mutations ---
 export const useSetProjectArchivedStatus = () => {
     const { supabase } = useAuth();
     const queryClient = useQueryClient();
@@ -1125,19 +1437,163 @@ export const useUpdateComment = (variationId: string | null) => {
 export const useDeleteComment = (variationId: string | null) => {
     const { supabase } = useAuth();
     const queryClient = useQueryClient();
+    const COMMENT_ATTACHMENTS_BUCKET = 'comment-attachments';
+    const PROCESSED_IMAGES_BUCKET = 'processed-images';
 
     return useMutation({
         mutationFn: async (commentId: string) => {
             if (!supabase) throw new Error("Supabase client not available");
             if (!commentId) throw new Error("Comment ID is required");
 
-            const { error } = await supabase
+            let attachmentFilePaths: string[] = [];
+
+            // --- 1. Fetch associated attachment file paths BEFORE deleting comment ---
+            try {
+                console.log(`[DeleteComment] Fetching attachments for comment ID: ${commentId}`);
+                const { data: attachments, error: fetchAttachError } = await supabase
+                    .from('attachments')
+                    .select('file_path')
+                    .eq('comment_id', commentId);
+
+                if (fetchAttachError) {
+                    console.error("[DeleteComment] Error fetching attachments:", fetchAttachError);
+                    // Decide if we should proceed? Let's proceed but log the error.
+                    toast.warning("Could not fetch attachment details before deleting comment.");
+                } else if (attachments && attachments.length > 0) {
+                    attachmentFilePaths = attachments.map(a => a.file_path).filter(Boolean); // Get non-null paths
+                    console.log(`[DeleteComment] Found attachment paths to delete:`, attachmentFilePaths);
+                }
+            } catch (error) {
+                console.error("[DeleteComment] Exception fetching attachments:", error);
+                toast.warning("An exception occurred while fetching attachment details.");
+            }
+
+            // --- 2. Delete the comment record (and its attachments via DB cascade) ---
+            console.log(`[DeleteComment] Attempting to delete comment record ID: ${commentId}`);
+            const { error: deleteCommentError } = await supabase
                 .from('comments')
                 .delete()
                 .eq('id', commentId);
 
-            if (error) {
-                throw new Error(`Failed to delete comment: ${error.message}`);
+            if (deleteCommentError) {
+                console.error("[DeleteComment] Error deleting comment record:", deleteCommentError);
+                throw new Error(`Failed to delete comment: ${deleteCommentError.message}`);
+            }
+            console.log(`[DeleteComment] Successfully deleted comment record ID: ${commentId}`);
+
+            // --- 3. Attempt to delete associated storage files AFTER successful DB delete ---
+            if (attachmentFilePaths.length > 0) {
+                console.log(`[DeleteComment] Starting storage cleanup for ${attachmentFilePaths.length} original files.`);
+                // REMOVED batch arrays: const originalPathsToDelete: string[] = [];
+                // REMOVED batch arrays: const processedPathsToDelete: string[] = [];
+
+                // --- Iterate and delete one by one for debugging --- 
+                for (const originalFilePath of attachmentFilePaths) {
+                    console.log(`[DeleteComment] Processing cleanup for original path: ${originalFilePath}`);
+                    const processedPathsForThisFile: string[] = [];
+
+                    // Construct paths for processed files
+                    const isGif = originalFilePath.toLowerCase().endsWith('.gif');
+                    
+                    // --- REVERTED: Use full basePath which includes 'comments/' ---
+                    const parts = originalFilePath.split('/'); // e.g., ["comments", "COMMENT_ID", "TIMESTAMP-FILENAME.png"]
+                    const fileNameWithExt = parts.pop() || ''; 
+                    const basePath = parts.join('/'); // e.g., "comments/COMMENT_ID"
+                    const fileNameWithoutExt = fileNameWithExt.includes('.') 
+                        ? fileNameWithExt.substring(0, fileNameWithExt.lastIndexOf('.')) 
+                        : fileNameWithExt; 
+                    // --- End Reverted --- 
+
+                    if (isGif) {
+                        // For GIFs, the processed path is the same as original ('comments/COMMENT_ID/FILENAME.gif')
+                        processedPathsForThisFile.push(originalFilePath); 
+                    } else {
+                        [THUMBNAIL_WIDTH, MEDIUM_WIDTH, LARGE_WIDTH].forEach(width => {
+                            // Use the full basePath here
+                            const processedPath = `${basePath}/${fileNameWithoutExt}_${width}.webp`;
+                            processedPathsForThisFile.push(processedPath);
+                        });
+                    }
+                    // --- END Individual Deletion ---
+
+                    // Perform deletions individually
+                    try {
+                        // Delete Original
+                        console.log(`[DeleteComment] Attempting to delete original from ${COMMENT_ATTACHMENTS_BUCKET}: [${originalFilePath}]`);
+                        const deleteOriginalResult = await supabase.storage
+                            .from(COMMENT_ATTACHMENTS_BUCKET)
+                            .remove([originalFilePath]); // Pass path in an array
+                        
+                        console.log("[DeleteComment] Raw result from deleting original:", deleteOriginalResult);
+                        
+                        if (deleteOriginalResult.error) {
+                            console.error(`[DeleteComment] Failed to delete original attachment file ${originalFilePath}:`, deleteOriginalResult.error);
+                            toast.warning(`Failed to clean up original attachment file: ${originalFilePath}`);
+                        } else {
+                            console.log(`[DeleteComment] Successfully reported deletion of original attachment file: ${originalFilePath}`);
+                        }
+
+                        // Delete Processed
+                        if (processedPathsForThisFile.length > 0) {
+                            // --- REMOVED DETAILED DEBUG LOG ---
+                            // console.log(`[DeleteComment DEBUG] Paths being sent to .remove() for PROCESSED_IMAGES_BUCKET: ${JSON.stringify(processedPathsForThisFile, null, 2)}`);
+                            console.log(`[DeleteComment] Attempting to delete processed from ${PROCESSED_IMAGES_BUCKET}:`, processedPathsForThisFile);
+                            const deleteProcessedResult = await supabase.storage
+                                .from(PROCESSED_IMAGES_BUCKET)
+                                .remove(processedPathsForThisFile);
+
+                            console.log("[DeleteComment] Raw result from deleting processed:", deleteProcessedResult);
+
+                            if (deleteProcessedResult.error) {
+                                 console.error(`[DeleteComment] Failed to delete processed attachment files for ${originalFilePath}:`, deleteProcessedResult.error);
+                                toast.warning(`Failed to clean up processed attachment files for: ${fileNameWithExt}`);
+                            } else {
+                                console.log(`[DeleteComment] Successfully reported deletion of processed attachment files for: ${originalFilePath}`);
+                            }
+                        }
+                    } catch (storageError) {
+                        console.error(`[DeleteComment] Exception during storage file deletion for ${originalFilePath}:`, storageError);
+                        toast.warning("Comment deleted, but encountered an error during storage cleanup.");
+                    }
+                    // --- END Individual Deletion --- 
+                }
+                
+                /* // REMOVED BATCH DELETION LOGIC
+                // Perform deletions
+                try {
+                    if (originalPathsToDelete.length > 0) {
+                        console.log(`[DeleteComment] Attempting to delete original attachments from ${COMMENT_ATTACHMENTS_BUCKET}:`, originalPathsToDelete);
+                        const { error: deleteOriginalError } = await supabase.storage
+                            .from(COMMENT_ATTACHMENTS_BUCKET)
+                            .remove(originalPathsToDelete);
+                        if (deleteOriginalError) {
+                            console.error(`[DeleteComment] Failed to delete some original attachment files:`, deleteOriginalError);
+                            toast.warning("Comment deleted, but failed to clean up some original attachment files.");
+                        } else {
+                            console.log(`[DeleteComment] Successfully deleted original attachment files.`);
+                        }
+                    }
+
+                    if (processedPathsToDelete.length > 0) {
+                        console.log(`[DeleteComment] Attempting to delete processed attachments from ${PROCESSED_IMAGES_BUCKET}:`, processedPathsToDelete);
+                        const { error: deleteProcessedError } = await supabase.storage
+                            .from(PROCESSED_IMAGES_BUCKET)
+                            .remove(processedPathsToDelete);
+                        if (deleteProcessedError) {
+                             console.error(`[DeleteComment] Failed to delete some processed attachment files:`, deleteProcessedError);
+                            toast.warning("Comment deleted, but failed to clean up some processed attachment files.");
+                        } else {
+                            console.log(`[DeleteComment] Successfully deleted processed attachment files.`);
+                        }
+                    }
+                } catch (storageError) {
+                    console.error(`[DeleteComment] Exception during storage file deletion:`, storageError);
+                    toast.warning("Comment deleted, but encountered an error during storage cleanup.");
+                }
+                */
+
+            } else {
+                console.log(`[DeleteComment] No attachment files found for comment ${commentId}, skipping storage deletion.`);
             }
 
             return commentId;

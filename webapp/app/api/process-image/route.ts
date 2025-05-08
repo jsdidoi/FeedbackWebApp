@@ -14,16 +14,28 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 // IMPORTANT: Use the SERVICE ROLE KEY here, not the ANON KEY
 // Store this securely, e.g., in Vercel Environment Variables, not in .env.local for client-side code
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const sourceBucket = process.env.NEXT_PUBLIC_SUPABASE_BUCKET || 'design-variations'; // Or your specific raw upload bucket
+const defaultSourceBucket = process.env.NEXT_PUBLIC_SUPABASE_BUCKET || 'design-variations'; 
+const commentAttachmentBucket = 'comment-attachments'; // Specific bucket for comments
 const targetBucket = process.env.NEXT_PUBLIC_SUPABASE_PROCESSED_BUCKET || 'processed-images';
 
 // --- Helper function to generate processed path (similar to edge function) ---
-function generateProcessedPath(originalPath: string, targetWidth: number): string {
+function generateProcessedPath(originalPath: string, targetWidth: number, isGif: boolean = false): string {
     const parts = originalPath.split('/');
     const fileNameWithAnyExt = parts.pop() || '';
     const fileNameWithoutAnyExt = fileNameWithAnyExt.split('.').slice(0, -1).join('.');
     const baseFileName = fileNameWithoutAnyExt.replace(/_\d+$/, '');
     const originalSubPath = parts.join('/');
+    
+    if (isGif) {
+        // For GIFs, we keep the original extension and don't append width,
+        // as we're just copying it. The path might still be useful for structure.
+        // We'll use a simple _gif suffix to differentiate if needed, or just the base name.
+        const gifFileName = `${baseFileName}.gif`;
+        return originalSubPath
+            ? `${originalSubPath}/${gifFileName}`
+            : gifFileName;
+    }
+
     const relativePath = originalSubPath
         ? `${originalSubPath}/${baseFileName}_${targetWidth}.webp`
         : `${baseFileName}_${targetWidth}.webp`;
@@ -73,11 +85,21 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ message: 'Unsupported file type, skipped.' }, { status: 200 });
     }
 
+    const isOriginalGif = fileExt === 'gif';
+
+    // --- Determine the correct source bucket based on the originalPath ---
+    let actualSourceBucket = defaultSourceBucket;
+    if (originalPath.startsWith('comments/')) {
+        actualSourceBucket = commentAttachmentBucket;
+    }
+    console.log(`[API /process-image] Determined source bucket: ${actualSourceBucket} for path: ${originalPath}`);
+    // --- End Determine Source Bucket ---
+
     try {
         // --- 1. Download Original Image --- 
-        console.log(`[API /process-image] Downloading original from ${sourceBucket}/${originalPath}...`);
+        console.log(`[API /process-image] Downloading original from ${actualSourceBucket}/${originalPath}...`);
         const { data: blob, error: downloadError } = await supabaseAdmin.storage
-            .from(sourceBucket)
+            .from(actualSourceBucket) // Use the dynamically determined source bucket
             .download(originalPath);
 
         if (downloadError || !blob) {
@@ -87,58 +109,83 @@ export async function POST(request: NextRequest) {
         const originalBuffer = Buffer.from(await blob.arrayBuffer());
         console.log(`[API /process-image] Downloaded ${originalPath}, size: ${originalBuffer.length} bytes`);
 
-        // --- 2. Process and Upload Different Sizes --- 
-        const widthsToProcess = [THUMBNAIL_WIDTH, MEDIUM_WIDTH, LARGE_WIDTH];
-        const processingPromises = [];
+        if (isOriginalGif) {
+            // --- Handle GIF: Copy to target bucket using the ORIGINAL path ---
+            console.log(`[API /process-image] GIF detected. Copying ${originalPath} to ${targetBucket}/${originalPath}`);
 
-        for (const width of widthsToProcess) {
-            const processedPath = generateProcessedPath(originalPath, width);
-            console.log(`[API /process-image] Processing for width ${width}, target path: ${processedPath}`);
+            const { error: copyError } = await supabaseAdmin.storage
+                .from(targetBucket)
+                .upload(originalPath, originalBuffer, {
+                    contentType: 'image/gif', // Set correct content type for GIF
+                    cacheControl: '3600',
+                    upsert: true, // Or false if you don't want to overwrite
+                });
 
-            // Use sharp to resize and convert to WebP
-            const processedBuffer = await sharp(originalBuffer)
-                .resize({ width: width, withoutEnlargement: true }) // Don't upscale smaller images
-                .webp({ quality: DEFAULT_IMAGE_QUALITY })
-                .toBuffer();
-
-            console.log(`[API /process-image] Uploading ${processedPath} (${processedBuffer.length} bytes) to ${targetBucket}...`);
-            
-            // Create a promise for each upload
-            processingPromises.push(
-                supabaseAdmin.storage
-                    .from(targetBucket)
-                    .upload(processedPath, processedBuffer, {
-                        contentType: 'image/webp',
-                        cacheControl: '3600',
-                        upsert: true,
-                    })
-            );
-        }
-
-        // --- 3. Wait for all uploads --- 
-        const results = await Promise.allSettled(processingPromises);
-
-        let uploadErrors = 0;
-        results.forEach((result, index) => {
-            if (result.status === 'rejected') {
-                uploadErrors++;
-                console.error(`[API /process-image] Error uploading processed image for width ${widthsToProcess[index]}:`, result.reason);
-            } else if (result.value.error) {
-                // Supabase client might return an error object even if promise resolves
-                uploadErrors++;
-                console.error(`[API /process-image] Supabase upload error for width ${widthsToProcess[index]}:`, result.value.error);
-            } else {
-                 console.log(`[API /process-image] Successfully uploaded width ${widthsToProcess[index]}`);
+            if (copyError) {
+                console.error(`[API /process-image] Error copying GIF ${originalPath} to ${targetBucket}:`, copyError);
+                throw new Error(`Failed to copy GIF: ${copyError.message}`);
             }
-        });
 
-        if (uploadErrors > 0) {
-            console.warn(`[API /process-image] Finished processing for ${originalPath} with ${uploadErrors} upload error(s).`);
-             // Still return success, but maybe log differently or handle partial failure
-             return NextResponse.json({ message: `Processing finished with ${uploadErrors} error(s).` }, { status: 207 }); // Multi-Status
+            console.log(`[API /process-image] Successfully copied GIF to ${targetBucket}/${originalPath}`);
+            return NextResponse.json({ message: 'GIF processed (copied) successfully.' }, { status: 200 });
+
         } else {
-             console.log(`[API /process-image] Successfully processed and uploaded all sizes for ${originalPath}`);
-             return NextResponse.json({ message: 'Image processed successfully.' }, { status: 200 });
+            // --- Handle Other Image Types: Process and Upload Different Sizes --- 
+            const widthsToProcess = [THUMBNAIL_WIDTH, MEDIUM_WIDTH, LARGE_WIDTH];
+            const processingPromises = [];
+
+            for (const width of widthsToProcess) {
+                const processedPath = generateProcessedPath(originalPath, width);
+                console.log(`[API /process-image] Processing for width ${width}, target path: ${processedPath}`);
+
+                // Use sharp to resize and convert to WebP
+                const processedBuffer = await sharp(originalBuffer)
+                    .resize({ width: width, withoutEnlargement: true }) // Don't upscale smaller images
+                    .webp({ quality: DEFAULT_IMAGE_QUALITY })
+                    .toBuffer();
+
+                console.log(`[API /process-image] Uploading ${processedPath} (${processedBuffer.length} bytes) to ${targetBucket}...`);
+                
+                // Create a promise for each upload
+                processingPromises.push(
+                    supabaseAdmin.storage
+                        .from(targetBucket)
+                        .upload(processedPath, processedBuffer, {
+                            contentType: 'image/webp',
+                            cacheControl: '3600',
+                            upsert: true,
+                        })
+                );
+            }
+
+            // --- 3. Wait for all uploads --- 
+            const results = await Promise.allSettled(processingPromises);
+
+            let uploadErrors = 0;
+            results.forEach((result, index) => {
+                if (result.status === 'rejected') {
+                    uploadErrors++;
+                    console.error(`[API /process-image] Error uploading processed image for width ${widthsToProcess[index]}:`, result.reason);
+                } else if (result.value.error) {
+                    // Supabase client might return an error object even if promise resolves
+                    uploadErrors++;
+                    console.error(`[API /process-image] Supabase upload error for width ${widthsToProcess[index]}:`, result.value.error);
+                } else {
+                     // --- ADDED LOG FOR EXACT STORED PATH ---
+                     const processedPath = generateProcessedPath(originalPath, widthsToProcess[index]); // Re-generate to log the correct path for this iteration
+                     console.log(`[API /process-image] SUCCESSFULLY STORED AS: ${processedPath}`);
+                     console.log(`[API /process-image] Successfully uploaded width ${widthsToProcess[index]}`);
+                }
+            });
+
+            if (uploadErrors > 0) {
+                console.warn(`[API /process-image] Finished processing for ${originalPath} with ${uploadErrors} upload error(s).`);
+                 // Still return success, but maybe log differently or handle partial failure
+                 return NextResponse.json({ message: `Processing finished with ${uploadErrors} error(s).` }, { status: 207 }); // Multi-Status
+            } else {
+                 console.log(`[API /process-image] Successfully processed and uploaded all sizes for ${originalPath}`);
+                 return NextResponse.json({ message: 'Image processed successfully.' }, { status: 200 });
+            }
         }
 
     } catch (error: unknown) {

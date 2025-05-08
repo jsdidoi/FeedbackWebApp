@@ -36,11 +36,21 @@ export const ModalImageViewer = ({ filePath }: ModalImageViewerProps) => {
 
     if (filePath) {
       try {
-        // 1. Generate the path for the large processed image
-        const processedPath = getProcessedImagePath(filePath, LARGE_WIDTH);
+        // --- CORRECTED: Handle GIF vs Other types --- 
+        const isGif = filePath.toLowerCase().endsWith('.gif');
+        let finalPath: string;
 
-        // 2. Construct the public URL
-        const publicUrl = getPublicImageUrl(supabaseUrl, processedBucketName, processedPath);
+        if (isGif) {
+          // For GIFs, the path in the processed bucket is the same as the original
+          finalPath = filePath;
+        } else {
+          // For other types, generate the large WebP path
+          finalPath = getProcessedImagePath(filePath, LARGE_WIDTH);
+        }
+        // --- END CORRECTION ---
+
+        // 2. Construct the public URL using the finalPath
+        const publicUrl = getPublicImageUrl(supabaseUrl, processedBucketName, finalPath);
 
         setImageUrl(publicUrl);
         setError(null);
@@ -73,7 +83,7 @@ export const ModalImageViewer = ({ filePath }: ModalImageViewerProps) => {
           style={{ objectFit: 'contain' }}
           priority
           className="rounded-lg"
-          unoptimized={!((imageUrl ?? "").includes(safeSupabaseUrl))}
+          unoptimized={filePath?.toLowerCase().endsWith('.gif')}
           onError={() => {
             console.error(`Failed to load large image: ${imageUrl}`);
             setError("Failed to load image.");
